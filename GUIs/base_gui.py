@@ -5,7 +5,7 @@ from PyQt5.QtGui import QPixmap, QImage
 from PyQt5.QtCore import Qt
 import numpy as np
 import cv2
-from PIPELINE.GUIs.gui_utils import cv_to_qt
+from gui_utils import cv_to_qt
 
 class BaseMaskApp(QMainWindow):
     def __init__(self, blue_image: np.ndarray, violet_image: np.ndarray):

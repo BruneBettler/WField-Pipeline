@@ -7,8 +7,8 @@ import os
 import json
 
 
-from PIPELINE.GUIs.base_gui import BaseMaskApp
-from PIPELINE.GUIs.gui_utils import cv_to_qt
+from GUIs.base_gui import BaseMaskApp
+from GUIs.gui_utils import cv_to_qt
 
 
 

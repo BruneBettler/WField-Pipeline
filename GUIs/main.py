@@ -1,5 +1,5 @@
 # main.py
-from draw_gui import MaskDrawingApp
+from mask_drawing_gui import MaskDrawingApp
 from PyQt5.QtWidgets import QApplication
 import sys, numpy as np
 
