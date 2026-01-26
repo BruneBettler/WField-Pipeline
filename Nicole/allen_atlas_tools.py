@@ -103,7 +103,7 @@ def get_allen_top_and_segmented(allen_ref_path):
 # extract the transformation to be done on the mouse brain frame (such that these can then be applied directly to a stack of brain frames) 
 # save to the coordinates.json file 
 
-def hdf5_to_allen_registration(mouse_path, reference_full_atlas_path, reference_atlas_coords_path, 
+def hdf5_to_allen_registration(mouse_path, reference_atlas_mask_path, reference_atlas_coords_path, 
                               save_output=True, visualize=False, use_robust_estimation=True, verbose=True):
     """
     Register mouse brain data to Allen atlas using anatomical landmarks with hemisphere splitting.
