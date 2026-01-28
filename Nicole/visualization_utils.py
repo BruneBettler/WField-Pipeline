@@ -41,6 +41,73 @@ def animate_image_stack(image_stack, interval_ms=50, cmap='gray',title=None):
     return HTML(ani.to_jshtml())
 
 
+def save_video_of_stack(image_stack, output_path, fps=20, cmap='viridis', title=None):
+    """
+    Saves a 3D image stack (T, H, W) as a video file (MP4 or GIF).
+    Uses 'ffmpeg' if available, otherwise falls back to 'pillow' (GIF).
+    """
+    num_frames = image_stack.shape[0]
+    
+    # Pre-calculate vmin/vmax from a subset for consistent contrast
+    subset = image_stack[::max(1, num_frames // 20)]
+    vmin = np.nanpercentile(subset, 1)
+    vmax = np.nanpercentile(subset, 99)
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    im = ax.imshow(image_stack[0], cmap=cmap, vmin=vmin, vmax=vmax)
+    ax.axis('off')
+    
+    title_text = ax.set_title(f"{title} Frame 0" if title else "Frame 0")
+
+    def animate(i):
+        im.set_data(image_stack[i])
+        if title:
+            title_text.set_text(f"{title} Frame {i}")
+        else:
+            title_text.set_text(f"Frame {i}")
+        return [im, title_text]
+
+    ani = FuncAnimation(fig, animate, frames=num_frames, interval=1000/fps, blit=True)
+    
+    try:
+        if output_path.endswith('.mp4'):
+            ani.save(output_path, writer='ffmpeg', fps=fps)
+        elif output_path.endswith('.gif'):
+            ani.save(output_path, writer='pillow', fps=fps)
+        else:
+            # Default to mp4 if extension not clear, or append it
+            output_path += ".mp4"
+            ani.save(output_path, writer='ffmpeg', fps=fps)
+        print(f"Saved video to {output_path}")
+    except Exception as e:
+        print(f"Primary save failed: {e}")
+        # Fallback to GIF if MP4 failed (often due to missing ffmpeg)
+        fallback_path = os.path.splitext(output_path)[0] + ".gif"
+        print(f"Attempting fallback to GIF: {fallback_path}")
+        try:
+            ani.save(fallback_path, writer='pillow', fps=fps)
+            print(f"Saved GIF to {fallback_path}")
+        except Exception as e2:
+            print(f"Failed to save fallback GIF: {e2}")
+
+    plt.close(fig)
+
+
+def plot_global_trace(trace_data, output_path, title="Global Average Trace", ylabel="dF/F"):
+    """
+    Plots a 1D trace and saves it to a file.
+    """
+    plt.figure(figsize=(12, 4))
+    plt.plot(trace_data)
+    plt.title(title)
+    plt.xlabel("Frame")
+    plt.ylabel(ylabel)
+    plt.tight_layout()
+    plt.savefig(output_path)
+    print(f"Saved trace plot to {output_path}")
+    plt.close()
+
+
 # function below is from the churchland wfield code # TODO: find a way to better cite this?
 def load_dat_frames(filename, nframes=None, offset=0, shape=None, dtype='uint16'):
     '''

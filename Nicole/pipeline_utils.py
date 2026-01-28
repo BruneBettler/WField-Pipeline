@@ -18,6 +18,114 @@ import cv2
 from datetime import datetime, timedelta
 import shutil
 from scipy.ndimage import binary_dilation, binary_erosion
+
+# ==========================================
+# Helper Functions for Pipeline
+# ==========================================
+
+def get_trial_index(filename):
+    """Extracts trial index from filename (e.g., Frames_..._0001.dat -> 1)"""
+    try:
+        # Assuming format ..._XXXX.dat
+        name = os.path.splitext(os.path.basename(filename))[0]
+        return int(name.split('_')[-1])
+    except (IndexError, ValueError):
+        return None
+
+def check_first_frame_is_blue(analog_path):
+    """
+    DEPRECATED: Use check_blue_is_first_via_intensity instead.
+    Checks Analog data to determine if Blue LED (Ch 1) or Violet LED (Ch 2) fired first.
+    Returns True if Blue is first, False if Violet is first.
+    """
+    # Import locally to avoid circular dependency (visualization_utils imports pipeline_utils)
+    from visualization_utils import load_dat_analog
+    
+    try:
+        data, _ = load_dat_analog(analog_path)
+        # Assuming Ch 1 = Blue, Ch 2 = Violet. Indices 1 and 2 in 0-based array.
+        # Note: load_dat_analog returns (n_channels, n_samples)
+        
+        # Check bounds
+        if data.shape[0] <= 2:
+            print(f"Warning: Not enough analog channels in {os.path.basename(analog_path)}")
+            return True # Default to Blue first
+            
+        ch_blue = data[1] # Channel 2 in 1-based usually index 1
+        ch_violet = data[2] # Channel 3 in 1-based usually index 2
+        
+        # Simple thresholding (mid-range of signal)
+        thresh_b = (np.max(ch_blue) + np.min(ch_blue)) / 2
+        thresh_v = (np.max(ch_violet) + np.min(ch_violet)) / 2
+        
+        # Find first rising edge
+        # We look for value > thresh. 
+        # Using argmax to find first index where condition is true is fast
+        # valid only if there IS a pulse.
+        
+        # Check if signals establish
+        if np.max(ch_blue) - np.min(ch_blue) < 1000: return True # No signal
+        if np.max(ch_violet) - np.min(ch_violet) < 1000: return True # No signal
+
+        idx_blue = np.argmax(ch_blue > thresh_b)
+        idx_violet = np.argmax(ch_violet > thresh_v)
+        
+        # If argmax returns 0, it might mean found at 0 OR not found.
+        # But here we assume pulses start later.
+        
+        return idx_blue < idx_violet
+    except Exception as e:
+        print(f"Error checking analog order for {analog_path}: {e}")
+        return True # Default
+
+def check_blue_is_first_via_intensity(dat_file_path, H, W, dtype=np.uint16, channels=2):
+    """
+    Determines if the first frame in the dat file is Blue or Violet based on mean intensity.
+    Violtet (Hemo) frames typically have higher baseline intensity than Blue (Functional) frames.
+    
+    Returns:
+        True if first frame is Blue (lower intensity)
+        False if first frame is Violet (higher intensity)
+    """
+    try:
+        # Calculate bytes to read for first 2 frames (Time 0, Ch0 and Ch1)
+        # File structure assumption: [Frame0_Ch0] [Frame0_Ch1] [Frame1_Ch0] ...
+        pixels_per_frame = H * W
+        bytes_per_pixel = np.dtype(dtype).itemsize
+        # Read first 2 frames
+        bytes_to_read = 2 * pixels_per_frame * bytes_per_pixel
+        
+        with open(dat_file_path, 'rb') as f:
+            data_bytes = f.read(bytes_to_read)
+            
+        if len(data_bytes) < bytes_to_read:
+            print(f"Warning: File {os.path.basename(dat_file_path)} too small for intensity check.")
+            return True # Default
+            
+        data = np.frombuffer(data_bytes, dtype=dtype)
+        
+        frame0 = data[:pixels_per_frame]
+        frame1 = data[pixels_per_frame:]
+        
+        m0 = np.mean(frame0)
+        m1 = np.mean(frame1)
+        
+        # Violet is usually brighter. 
+        # If m0 < m1, m0 is Blue. 
+        # If m0 > m1, m0 is Violet.
+        is_blue_first = m0 < m1
+        
+        if abs(m0 - m1) < 100:
+            print(f"Warning: Low contrast between channels in {os.path.basename(dat_file_path)} (Diff={m1-m0:.1f}). Defaulting to Blue First.")
+            return True
+            
+        return is_blue_first
+        
+    except Exception as e:
+        print(f"Error checking intensity order for {dat_file_path}: {e}")
+        return True
+
+
 import sys
 
 # HDF5 FUNCTIONS ------------------------------------

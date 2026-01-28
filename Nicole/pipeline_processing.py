@@ -122,12 +122,20 @@ def hdf5_motion_correct(input_hdf5_dataset, output_hdf5_dataset, nreference=60, 
 
     # Compute reference frames using the middle nreference frames (each channel independently)
     midpoint = int(nframes / 2)
-    ref_chunk = input_hdf5_dataset[midpoint - nreference // 2 : midpoint + nreference // 2]
-    refs = np.mean(ref_chunk, axis=0).astype('float32')  # Mean reference per channel
+    # Ensure indices are valid
+    start_idx = max(0, midpoint - nreference // 2)
+    end_idx = min(nframes, midpoint + nreference // 2)
+    
+    ref_chunk = input_hdf5_dataset[start_idx : end_idx]
+    
+    # Use MEDIAN instead of MEAN for reference generation
+    # This automatically ignores outlier frames (like the dark inter-trial dips)
+    # ensuring the reference template is clean.
+    refs = np.median(ref_chunk, axis=0).astype('float32')  # Median reference per channel
 
     # Align reference frames
     _, refs = _register_multichannel_stack(ref_chunk, refs, mode=mode)
-    refs = np.mean(refs, axis=0).astype('float32')  # Compute final reference
+    refs = np.median(refs, axis=0).astype('float32')  # Compute final reference (Median again)
 
     # Process chunks efficiently
     for c in tqdm(chunks, desc='Motion correction'):
@@ -216,7 +224,11 @@ def _registration_ecc(frame,template,
     M = np.eye(2, 3, dtype=np.float32)
     criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
                 niter,  eps0)
-    (res, M) = cv2.findTransformECC(template,dst, M, warp_mode, criteria, inputMask=hann, gaussFiltSize=gaussian_filter)
+    try:
+        (res, M) = cv2.findTransformECC(template,dst, M, warp_mode, criteria, inputMask=hann, gaussFiltSize=gaussian_filter)
+    except cv2.error as e:
+        # print(f"Warning: ECC failed to converge. using identity. {e}")
+        pass
     dst = cv2.warpAffine(frame, M, (w,h), flags=cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP)
     return M, np.clip(dst,0,(2**16-1)).astype('uint16')
 

@@ -8,8 +8,8 @@ import cv2
 from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QLabel, QVBoxLayout, QWidget, QSlider
 from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor, QImage
 from PyQt5.QtCore import Qt, QPoint
-from gui_utils import cv_to_qt
-from base_gui import BaseMaskApp
+from .gui_utils import cv_to_qt
+from .base_gui import BaseMaskApp
 
 
 class MaskDrawingApp(BaseMaskApp):

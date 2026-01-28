@@ -7,8 +7,8 @@ import os
 import json
 
 
-from GUIs.base_gui import BaseMaskApp
-from GUIs.gui_utils import cv_to_qt
+from .base_gui import BaseMaskApp
+from .gui_utils import cv_to_qt
 
 
 
