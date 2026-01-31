@@ -10,7 +10,7 @@ It overlays:
 - Synchronization Metrics
 
 Usage:
-    python generate_alignment_video.py --data_dir "D:/path/to/data"
+    python generate_alignment_video.py --data_dir "D:/path/to/data" --output_dir "D:/path/to/output"
 """
 
 import os
@@ -70,12 +70,21 @@ def get_trial_frame_counts(data_dir):
 # MAIN
 # ============================================================================
 
-def generate_video(data_dir, output_filename="alignment_side_by_side.mp4"):
+def generate_video(data_dir, output_dir=None, output_filename="alignment_side_by_side.mp4"):
     
     alignment_dir = os.path.join(data_dir, "alignment")
     preprocessed_dir = os.path.join(data_dir, "preprocessed_data")
     matrix_path = os.path.join(alignment_dir, "aligned_full_matrix.npy")
-    output_path = os.path.join(data_dir, output_filename)
+    
+    # Output path logic
+    if output_dir is None:
+        # Default to 'alignment_verification' subfolder inside data_dir
+        output_dir = os.path.join(data_dir, "alignment_verification")
+    
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+        
+    output_path = os.path.join(output_dir, output_filename)
 
     # 1. Validation
     if not os.path.exists(matrix_path):
@@ -83,6 +92,7 @@ def generate_video(data_dir, output_filename="alignment_side_by_side.mp4"):
         
     print(f"\n--- Generating Alignment Verification Video ---")
     print(f"Data Directory: {data_dir}")
+    print(f"Output: {output_path}")
 
     # 2. Find Files
     # HDF5
@@ -246,11 +256,12 @@ def generate_video(data_dir, output_filename="alignment_side_by_side.mp4"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate Alignment Video")
-    parser.add_argument('--data_dir', type=str, default=DEFAULT_DATA_DIR, help="Path to data directory")
-    parser.add_argument('--output', type=str, default="alignment_side_by_side.mp4", help="Output filename")
+    parser.add_argument('--data_dir', type=str, required=True, help="Path to data directory")
+    parser.add_argument('--output_dir', type=str, default=None, help="Directory to save video (defaults to data_dir/alignment_verification)")
+    parser.add_argument('--filename', type=str, default="alignment_side_by_side.mp4", help="Output filename")
     
     args = parser.parse_args()
     try:
-        generate_video(args.data_dir, args.output)
+        generate_video(args.data_dir, args.output_dir, args.filename)
     except Exception as e:
         print(f"Error: {e}")
