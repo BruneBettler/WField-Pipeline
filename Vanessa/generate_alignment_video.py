@@ -1,0 +1,256 @@
+
+"""
+Alignment Video Generator
+=========================
+Generates a side-by-side video verification of the Widefield-Eye synchronization.
+It overlays:
+- Preprocessed Widefield Frames (dF/F)
+- Eye Camera Video
+- Trial Information
+- Synchronization Metrics
+
+Usage:
+    python generate_alignment_video.py --data_dir "D:/path/to/data"
+"""
+
+import os
+import argparse
+import numpy as np
+import h5py
+import cv2
+import tqdm
+import glob
+import bisect
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+# Default logic constants
+COL_EYE_CAMERA = 5
+COL_FRAME_INDEX = 21
+COL_TRIAL_INDEX = 20
+
+# Frame size for raw validation (uint16, 2 channels, 640x540)
+FRAME_SIZE_BYTES = 2 * 640 * 540 * 2  
+
+DEFAULT_DATA_DIR = r"D:\Vanessa_test_data\Tests_Jan23\23-Jan-2026_ledTTL_10random"
+
+
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
+
+def normalize_frame(frame, p_min=1, p_max=99):
+    """Normalize frame to 0-255 range based on percentiles."""
+    frame = np.nan_to_num(frame)
+    vmin, vmax = np.percentile(frame, [p_min, p_max])
+    if vmax == vmin:
+        return np.zeros_like(frame, dtype=np.uint8)
+    norm = (frame - vmin) / (vmax - vmin)
+    norm = np.clip(norm, 0, 1)
+    return (norm * 255).astype(np.uint8)
+
+def get_trial_frame_counts(data_dir):
+    """Scan Frames_*.dat files to determine frames per trial."""
+    dat_files = glob.glob(os.path.join(data_dir, "Frames_*.dat"))
+    dat_files.sort(key=lambda x: int(os.path.basename(x).split('_')[-1].split('.')[0]))
+    
+    counts = []
+    print(f"Scanning {len(dat_files)} .dat files...")
+    for fpath in dat_files:
+        size = os.path.getsize(fpath)
+        # File contains N timepoints (each timepoint = 2 channels * 640 * 540 * uint16)
+        n_raw = size // FRAME_SIZE_BYTES
+        counts.append(n_raw)
+    return counts, dat_files
+
+
+# ============================================================================
+# MAIN
+# ============================================================================
+
+def generate_video(data_dir, output_filename="alignment_side_by_side.mp4"):
+    
+    alignment_dir = os.path.join(data_dir, "alignment")
+    preprocessed_dir = os.path.join(data_dir, "preprocessed_data")
+    matrix_path = os.path.join(alignment_dir, "aligned_full_matrix.npy")
+    output_path = os.path.join(data_dir, output_filename)
+
+    # 1. Validation
+    if not os.path.exists(matrix_path):
+        raise FileNotFoundError(f"Alignment matrix not found at {matrix_path}")
+        
+    print(f"\n--- Generating Alignment Verification Video ---")
+    print(f"Data Directory: {data_dir}")
+
+    # 2. Find Files
+    # HDF5
+    h5_files = [f for f in os.listdir(preprocessed_dir) if f.endswith('.h5py') or f.endswith('.h5')]
+    if not h5_files:
+        raise FileNotFoundError("No widefield HDF5 file found in preprocessed_data")
+    wf_h5_path = os.path.join(preprocessed_dir, h5_files[0])
+    
+    # MP4
+    mp4_files = [f for f in os.listdir(data_dir) if f.startswith("eyecam") and f.endswith('.mp4')]
+    if not mp4_files:
+        raise FileNotFoundError("No eyecam MP4 video found in data directory")
+    eye_video_path = os.path.join(data_dir, mp4_files[0])
+
+    # 3. Load Matrix
+    print("Loading aligned matrix...")
+    matrix = np.load(matrix_path, mmap_mode='r')
+    eye_camera_signal = matrix[:, COL_EYE_CAMERA]
+    frame_indices = matrix[:, COL_FRAME_INDEX]
+    trial_indices = matrix[:, COL_TRIAL_INDEX]
+
+    # 4. Eye Camera Offset Calculation
+    print("Detecting eye camera triggers...")
+    thresh = 2.5 if eye_camera_signal.max() > 1.5 else 0.5
+    triggers = (eye_camera_signal > thresh).astype(int)
+    rising_edges = np.where(np.diff(triggers) == 1)[0]
+    n_triggers = len(rising_edges)
+    
+    print(f"Opening eye video: {os.path.basename(eye_video_path)}")
+    eye_cap = cv2.VideoCapture(eye_video_path)
+    eye_n_frames = int(eye_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    eye_width = int(eye_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    eye_height = int(eye_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    print(f"  Triggers: {n_triggers}, Frames: {eye_n_frames}")
+    # BACKWARD OFFSET: Last Trigger <-> Last Frame
+    eye_offset = eye_n_frames - n_triggers
+    print(f"  Calculated Offset (Frames - Triggers): {eye_offset}")
+
+    # 5. Trial Mapping
+    trial_counts, _ = get_trial_frame_counts(data_dir)
+    print(f"  Trials found: {len(trial_counts)}")
+
+    # 6. Open Widefield HDF5
+    print(f"Opening widefield data: {os.path.basename(wf_h5_path)}")
+    hf = h5py.File(wf_h5_path, 'r')
+    if 'led/deltaF' in hf:
+        wf_dset = hf['led/deltaF']
+    elif 'led/data' in hf:
+        wf_dset = hf['led/data']
+    else:
+        raise ValueError("Could not find 'led/deltaF' or 'led/data'")
+        
+    n_wf_frames, wf_height, wf_width = wf_dset.shape
+    print(f"  Processed Frames: {n_wf_frames}")
+
+    # 7. Setup Output
+    out_width = wf_width + eye_width
+    out_height = max(wf_height, eye_height)
+    print(f"Output Resolution: {out_width}x{out_height}")
+    
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out_writer = cv2.VideoWriter(output_path, fourcc, 20.0, (out_width, out_height))
+    
+    # 8. Build Alignment Map
+    print("Building alignment index map...")
+    trial_start_indices = [0]
+    cumulative = 0
+    for c in trial_counts:
+        cumulative += c
+        trial_start_indices.append(cumulative)
+        
+    mask = ~np.isnan(frame_indices) & ~np.isnan(trial_indices)
+    valid_samples = np.where(mask)[0]
+    t_vals = trial_indices[valid_samples].astype(int)
+    f_vals = frame_indices[valid_samples].astype(int)
+    
+    # Key: Trial * 100000 + Frame
+    keys = t_vals.astype(np.uint64) * 100000 + f_vals.astype(np.uint64)
+    u_keys, u_indices = np.unique(keys, return_index=True)
+    global_u_indices = valid_samples[u_indices]
+    
+    print("Map built. Starting video generation...")
+    
+    last_eye_frame = None
+    current_eye_pos = -1
+
+    for global_idx in tqdm.tqdm(range(n_wf_frames)):
+        
+        # Determine Trial
+        t_idx = bisect.bisect_right(trial_start_indices, global_idx) - 1
+        if t_idx >= len(trial_counts): break
+        
+        local_idx = global_idx - trial_start_indices[t_idx]
+        target_raw = local_idx * 2  # Stride correction (10Hz vs 20Hz)
+        
+        # Lookup Timestamp
+        search_key = int(t_idx) * 100000 + int(target_raw)
+        k_idx = np.searchsorted(u_keys, search_key)
+        
+        has_sync = False
+        timestamp_sample = None
+        
+        if k_idx < len(u_keys) and u_keys[k_idx] == search_key:
+            timestamp_sample = global_u_indices[k_idx]
+            has_sync = True
+            
+        # Get Widefield
+        w_img = normalize_frame(wf_dset[global_idx])
+        w_color = cv2.cvtColor(w_img, cv2.COLOR_GRAY2BGR)
+        
+        # Get Eye Frame
+        e_img = None
+        eye_idx_display = -1
+        
+        if has_sync:
+            n_trigues_before = np.searchsorted(rising_edges, timestamp_sample)
+            idx_in_trig = n_trigues_before - 1
+            target_eye = idx_in_trig + eye_offset if idx_in_trig >= 0 else -1
+            eye_idx_display = target_eye
+            
+            if target_eye < 0:
+                 e_img = np.zeros((eye_height, eye_width, 3), dtype=np.uint8)
+            elif target_eye >= eye_n_frames:
+                 e_img = last_eye_frame if last_eye_frame is not None else np.zeros((eye_height, eye_width, 3), dtype=np.uint8)
+            else:
+                if target_eye != current_eye_pos:
+                    eye_cap.set(cv2.CAP_PROP_POS_FRAMES, target_eye)
+                    ret, fr = eye_cap.read()
+                    if ret:
+                        e_img = fr
+                        last_eye_frame = fr
+                        current_eye_pos = target_eye
+                    else:
+                        e_img = np.zeros((eye_height, eye_width, 3), dtype=np.uint8)
+                else:
+                    e_img = last_eye_frame
+        else:
+            e_img = np.zeros((eye_height, eye_width, 3), dtype=np.uint8)
+            cv2.putText(e_img, "NO SYNC", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
+            
+        # Composite
+        canvas = np.zeros((out_height, out_width, 3), dtype=np.uint8)
+        canvas[:wf_height, :wf_width] = w_color
+        if e_img is not None:
+             h_e, w_e = e_img.shape[:2]
+             canvas[:h_e, wf_width:wf_width+w_e] = e_img
+             
+        # Text
+        txt1 = f"Trial: {t_idx} | WF: {local_idx}"
+        txt2 = f"Eye: {eye_idx_display}" if has_sync else "Eye: --"
+        cv2.putText(canvas, txt1, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.putText(canvas, txt2, (wf_width+10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        out_writer.write(canvas)
+        
+    out_writer.release()
+    eye_cap.release()
+    hf.close()
+    print(f"\nDone. Saved to {output_path}")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Generate Alignment Video")
+    parser.add_argument('--data_dir', type=str, default=DEFAULT_DATA_DIR, help="Path to data directory")
+    parser.add_argument('--output', type=str, default="alignment_side_by_side.mp4", help="Output filename")
+    
+    args = parser.parse_args()
+    try:
+        generate_video(args.data_dir, args.output)
+    except Exception as e:
+        print(f"Error: {e}")

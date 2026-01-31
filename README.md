@@ -66,6 +66,20 @@ This pipeline performs the following steps:
 5.  **Delta F/F**: Calculates the relative fluorescence change.
 6.  **Visualization**: Generates global traces and a video preview.
 
+### 5. Alignment and Synchronization (New)
+
+The `Vanessa/` folder also contains tools for synchronizing Widefield data with external behavioral inputs (e.g., eye camera, rotary encoder).
+
+**Tools available:**
+*   `alignment_pipeline.py`: Aligns analog signals (triggers, rotary encoder) and eye camera timestamps to the master WField clock (HDF5).
+*   `generate_alignment_video.py`: Creates a side-by-side verification video validating the sync between Eye Camera and Widefield frames.
+
+**To run the alignment verification:**
+```bash
+cd Vanessa
+python generate_alignment_video.py --data_dir "path/to/data"
+```
+
 ### Troubleshooting Channel Order (Blue vs Violet)
 The pipeline now uses an automatic intensity check (`check_blue_is_first_via_intensity`) to ensure Channel 0 is always Blue (Functional) and Channel 1 is always Violet (Ref/Hemo). If you suspect the channels are still swapped (e.g., if the DeltaF signal looks inverted), check the console output for "Detected Violet-First" messages or inspect the `Blue_vs_Violet_Trace.png` output.
 

@@ -24,6 +24,7 @@ import struct
 import h5py
 import numpy as np
 import matplotlib
+import argparse
 matplotlib.use('Agg')  # Non-interactive backend for saving plots
 import matplotlib.pyplot as plt
 import scipy.io
@@ -34,9 +35,17 @@ from datetime import timedelta
 # GLOBAL CONFIGURATION
 # ============================================================================
 
-# Set your data directory here
-DATA_DIR = r"D:\Vanessa_test_data\Tests_Jan23\23-Jan-2026_ledTTL_10random"
-OUTPUT_DIR = None  # If None, will default to DATA_DIR/alignment
+# Default settings (can be overridden by args)
+DEFAULT_DATA_DIR = r"D:\Vanessa_test_data\Tests_Jan23\23-Jan-2026_ledTTL_10random"
+
+# Alignment Parameters
+OFFSET_FRAME_SAMPLES = 10  # How many frames from end to use as anchor (e.g. -6, -8, -10)
+                          # NOTE: Logic uses n_frames - OFFSET_FRAME_SAMPLES
+
+# Plotting Selection
+# Set to 'all', None, or a list of integers [0, 1, 2, ...]
+# TRIALS_TO_PLOT = []  
+TRIALS_TO_PLOT = 'all' 
 
 
 # ============================================================================
@@ -79,6 +88,18 @@ class AlignmentConfig:
 # ============================================================================
 # UTILITY FUNCTIONS
 # ============================================================================
+
+def is_trial_to_plot(trial_idx):
+    """Check if trial should be plotted based on global configuration."""
+    if TRIALS_TO_PLOT == 'all':
+        return True
+    if TRIALS_TO_PLOT is None:
+        return False
+    try:
+        return trial_idx in TRIALS_TO_PLOT
+    except:
+        return False
+
 
 def normalize_arr(arr):
     """Normalize array to 0-1 range."""
@@ -178,7 +199,8 @@ def identify_hdf5_trials(data, config=AlignmentConfig(), verbose=True):
     c4 = data[:, 4]  # Stop Signal
     
     start_rising, _ = find_edges(c3, threshold=config.TRIGGER_THRESHOLD)
-    stop_rising, _ = find_edges(c4, threshold=config.TRIGGER_THRESHOLD)
+    # Changed to falling edge for stop signal as per new requirement
+    _, stop_falling = find_edges(c4, threshold=config.TRIGGER_THRESHOLD)
     
     if verbose:
         print(f"  Found {len(start_rising)} start triggers")
@@ -190,8 +212,8 @@ def identify_hdf5_trials(data, config=AlignmentConfig(), verbose=True):
     for i in range(len(start_rising)):
         start_idx = start_rising[i]
         
-        # Find corresponding stop trigger
-        relevant_stops = stop_rising[stop_rising > start_idx]
+        # Find corresponding stop trigger (using falling edge)
+        relevant_stops = stop_falling[stop_falling > start_idx]
         if len(relevant_stops) > 0:
             stop_idx = relevant_stops[0]
         else:
@@ -362,10 +384,13 @@ def load_frame_offset(frameTimes_path, verbose=False):
         verbose: Print information
         
     Returns:
-        Number of offset frames
+        (offset_frames, post_stim_frames)
     """
     try:
         ft_mat = scipy.io.loadmat(frameTimes_path)
+        
+        offset = 0
+        post_stim = 0
         
         # Check removedFrames first
         if 'removedFrames' in ft_mat:
@@ -373,173 +398,264 @@ def load_frame_offset(frameTimes_path, verbose=False):
             if removed > 0:
                 if verbose:
                     print(f"    Using removedFrames: {removed}")
-                return removed
+                offset = removed
         
-        # Fall back to preStim
-        if 'preStim' in ft_mat:
+        # Fall back to preStim if offset is still 0 (or should we overwrite?)
+        # Original logic: if removed > 0 return removed.
+        # Let's keep priority.
+        if offset == 0 and 'preStim' in ft_mat:
             prestim = int(ft_mat['preStim'].flatten()[0])
             if verbose:
                 print(f"    Using preStim: {prestim}")
-            return prestim
+            offset = prestim
+            
+        # Get postStim (dark frames at end)
+        # User update: Always use 5 frames, ignore file value
+        post_stim = 5
+        if verbose:
+            print(f"    Using fixed postStim (dark frames): {post_stim}")
         
-        return 0
+        return offset, post_stim
         
     except Exception as e:
         if verbose:
             print(f"    Error loading frameTimes.mat: {e}")
-        return 0
+        return 0, 0
 
 
-def process_frames_with_offset(frames_files, frameTimes_files, analog_trials, trials_hdf5, 
+def process_frames_with_offset(frames_files, frameTimes_files, analog_trials, trials_hdf5, hdf5_data, output_dir, 
                                 config=AlignmentConfig(), verbose=True):
     """
-    Process frame files with offset correction and align to global timeline.
-    
-    This is the critical "Step 6" that performs frame synchronization with offset handling.
-    
-    Args:
-        frames_files: List of Frames_*.dat files
-        frameTimes_files: List of frameTimes*.mat files
-        analog_trials: List of analog trial dictionaries
-        trials_hdf5: List of HDF5 trial dictionaries
-        config: Configuration object
-        verbose: Print information
-        
-    Returns:
-        (global_blue_times, global_blue_vals) - Lists of aligned frame times and values
+    Process frames aligning to Analog Stop signal (Ch4) and mapping backwards.
+    Frame -OFFSET is aligned to the nearest Blue LED TTL (Ch15) before Stop.
     """
     if verbose:
-        print("\n" + "="*70)
-        print("STEP 6: Frame Synchronization with Offset Correction")
-        print("="*70)
-        print("Interpreting 'preStim'/'removedFrames' as START DELAY.")
-        print("Action: Keep ALL frames. Align Frame[0] to TTL[Offset].")
-        print("Result: Frames are shifted LATER in time (rightward).")
-        print("-"*70)
+        print(f"\\nProcessing frames with reverse alignment (Anchor: Stop Signal -> Frame -{OFFSET_FRAME_SAMPLES})...")
     
     global_blue_times = []
     global_blue_vals = []
     
-    n_proc = min(len(analog_trials), len(frames_files))
+    # New global lists for ALL frames (Blue + Violet)
+    global_all_times = []
+    global_all_frame_indices = []
     
-    for i in range(n_proc):
+    trial_blue_data = []
+
+    mapped_count = min(len(trials_hdf5), len(analog_trials), len(frames_files))
+    
+    for i in range(mapped_count):
+        h_trial = trials_hdf5[i]
+        a_trial = analog_trials[i]
+        frames_path = frames_files[i]
+        
+        # 1. Get Frame Count and Means
         try:
-            a_trial = analog_trials[i]
-            h_trial = trials_hdf5[i]
-            f_path = frames_files[i]
-            
-            # Load offset from frameTimes.mat
-            offset_frames = 0
-            if i < len(frameTimes_files):
-                offset_frames = load_frame_offset(frameTimes_files[i], verbose=verbose)
-                offset_time_s = offset_frames * (1.0 / config.FRAME_RATE)
-                if verbose:
-                    print(f"\nTrial {i}:")
-                    print(f"  Offset: {offset_frames} frames ~ {offset_time_s:.2f}s delay")
-                    print(f"  Mapping: Frame[0] -> TTL[{offset_frames}]")
-            
-            # Determine frame dimensions
-            channels, h_dim, w_dim = config.DEFAULT_FRAME_SHAPE
-            parts = os.path.basename(f_path).split('_')
-            nums = [int(p) for p in parts if p.isdigit()]
-            if len(nums) >= 3:
-                channels, h_dim, w_dim = nums[:3]
-            
-            # Check frame order (Blue first vs Violet first)
-            is_blue_first = check_blue_is_first_via_intensity(f_path, h_dim, w_dim)
-            if not is_blue_first and verbose:
-                print(f"  Detected: Violet first (swapped sequence)")
-            
-            # Get TTLs from Analog (Ch1=Blue, Ch2=Violet)
-            raw_ch1 = a_trial['data'][1].astype(float)
-            raw_ch2 = a_trial['data'][2].astype(float)
-            
-            r_blue, _ = find_edges(normalize_arr(raw_ch1), config.TRIGGER_THRESHOLD)
-            r_violet, _ = find_edges(normalize_arr(raw_ch2), config.TRIGGER_THRESHOLD)
-            
-            # Create sorted list of all TTL events
-            ttls = [(t, 'blue') for t in r_blue] + [(t, 'violet') for t in r_violet]
-            ttls.sort(key=lambda x: x[0])
-            
-            if not ttls:
-                if verbose:
-                    print(f"  No TTLs found. Skipping.")
-                continue
-            
-            if offset_frames >= len(ttls):
-                if verbose:
-                    print(f"  Offset {offset_frames} >= TTLs {len(ttls)}. Skipping.")
-                continue
-            
-            # Load all frames
-            with open(f_path, 'rb') as f:
-                raw_dat = np.fromfile(f, dtype='uint16')
-            
-            n_pix = h_dim * w_dim
-            n_total_frames = len(raw_dat) // n_pix
-            
-            # Sync Logic: Frame[0] -> TTL[offset_frames]
-            ttl_idx = offset_frames
-            frame_idx = 0
-            
-            # Verify color match at alignment point
-            frame0_color = 'blue' if is_blue_first else 'violet'
-            ttl_offset_color = ttls[ttl_idx][1]
-            
-            if frame0_color != ttl_offset_color:
-                if verbose:
-                    print(f"  Color mismatch: Frame[0]={frame0_color}, TTL[{ttl_idx}]={ttl_offset_color}")
-                    print(f"  Adjusting: +1 TTL")
-                ttl_idx += 1
-                if ttl_idx >= len(ttls):
-                    if verbose:
-                        print(f"  Adjustment failed. Skipping.")
-                    continue
-            
-            # Calculate global time offset
-            t_trig_glob = h_trial['start_time_s']
-            t_trig_loc_s = a_trial['local_start_sample'] / config.ANALOG_SAMPLING_RATE
-            t_start_glob = t_trig_glob - t_trig_loc_s
-            
-            # Extract Blue frame data
-            trial_times = []
-            trial_vals = []
-            
-            while frame_idx < n_total_frames and ttl_idx < len(ttls):
-                # Determine frame color
-                frame_is_blue = (frame0_color == 'blue' and frame_idx % 2 == 0) or \
-                               (frame0_color == 'violet' and frame_idx % 2 != 0)
-                
-                if frame_is_blue:
-                    # Extract frame pixels
-                    start_ptr = frame_idx * n_pix
-                    end_ptr = start_ptr + n_pix
-                    frame_pixels = raw_dat[start_ptr:end_ptr]
-                    val = np.mean(frame_pixels)
-                    
-                    # Get global time from TTL
-                    ttl_sample = ttls[ttl_idx][0]
-                    t_glob = t_start_glob + (ttl_sample / config.ANALOG_SAMPLING_RATE)
-                    
-                    trial_times.append(t_glob)
-                    trial_vals.append(val)
-                
-                frame_idx += 1
-                ttl_idx += 1
+            # Use dimensions from config
+            H, W = config.DEFAULT_FRAME_SHAPE[1], config.DEFAULT_FRAME_SHAPE[2]
+            pixels_per_frame = H * W
+            bytes_per_frame = pixels_per_frame * 2
+            file_size = os.path.getsize(frames_path)
+            n_frames = file_size // bytes_per_frame
             
             if verbose:
-                print(f"  Extracted {len(trial_vals)} Blue frames")
+                print(f"  Trial {i}: {os.path.basename(frames_path)} | Frames: {n_frames}")
             
-            global_blue_times.extend(trial_times)
-            global_blue_vals.extend(trial_vals)
+            # Load frame means for plotting and values
+            mmap_frames = np.memmap(frames_path, dtype='uint16', mode='r')
+            if len(mmap_frames) >= n_frames * pixels_per_frame:
+                mmap_frames = mmap_frames[:n_frames * pixels_per_frame]
+                frames_2d = mmap_frames.reshape((n_frames, pixels_per_frame))
+                frame_means = frames_2d.mean(axis=1)
+            else:
+                frame_means = np.zeros(n_frames)
+            
+            del mmap_frames # Close mmap
             
         except Exception as e:
             if verbose:
-                print(f"  Error processing trial {i}: {e}")
-                import traceback
-                traceback.print_exc()
-    
-    return global_blue_times, global_blue_vals
+                print(f"    Error reading frames: {e}")
+            continue
+
+        # 2. Logic: Last valid frame is Frame -OFFSET
+        if n_frames < OFFSET_FRAME_SAMPLES + 5:
+            if verbose: print(f"    Skipping: Too few frames (< {OFFSET_FRAME_SAMPLES}+5)")
+            continue
+            
+        last_valid_idx = n_frames - OFFSET_FRAME_SAMPLES
+        
+        # 3. Find Global Stop Signal (HDF5 Ch4) mapped to Analog Time
+        adat = a_trial['data']
+        start_sample = a_trial['local_start_sample']
+
+        # Get duration from HDF5 (Master Clock)
+        h_duration_samples = h_trial['stop_sample'] - h_trial['start_sample']
+        h_duration_s = h_duration_samples / config.HDF5_SAMPLING_RATE
+        
+        # Calculate Projected Stop Sample in Analog Data
+        stop_idx = start_sample + int(h_duration_s * config.ANALOG_SAMPLING_RATE)
+        
+        if verbose:
+             print(f"    Using HDF5 Stop mapped to Analog: {stop_idx} (Duration: {h_duration_s:.4f}s)")
+
+        # 4. Find Blue LED TTLs (Ch 15 -> Index 1) AND Violet LED TTLs (Ch 16 -> Index 2)
+        blue_sig = normalize_arr(adat[1].astype(float))
+        rising_blue, _ = find_edges(blue_sig, config.TRIGGER_THRESHOLD)
+        
+        violet_sig = normalize_arr(adat[2].astype(float))
+        rising_violet, _ = find_edges(violet_sig, config.TRIGGER_THRESHOLD)
+        
+        # 5. Find Nearest Blue Pulse BEFORE Stop
+        candidates = [b for b in rising_blue if b < stop_idx]
+        if not candidates:
+            if verbose: print("    No blue pulse before stop.")
+            continue
+            
+        target_blue_pulse = candidates[-1]
+        
+        # 6. Map Backwards
+        # Frame[last_valid_idx] -> target_blue_pulse
+        # Step back by 2 frames (Blue to Blue)
+        # Find index of pulse in rising_blue
+        try:
+            pulse_arr_idx = np.where(rising_blue == target_blue_pulse)[0][0]
+        except:
+            continue
+            
+        frame_time_map = {} # frame_idx -> sample_idx
+        
+        curr_frame = last_valid_idx
+        curr_pulse_idx = pulse_arr_idx
+        
+        while curr_frame >= 0 and curr_pulse_idx >= 0:
+            # Map Blue Frame (curr_frame) -> Blue Pulse (curr_pulse_idx)
+            t_blue = rising_blue[curr_pulse_idx]
+            frame_time_map[curr_frame] = t_blue
+            
+            # Map corresponding Violet Frame (curr_frame - 1)
+            # Logic: Violet pulse usually occurs ~50ms before/after Blue in 20Hz alternating
+            # Here assuming Violet frame (N-1) is before Blue frame (N)
+            v_frame = curr_frame - 1
+            if v_frame >= 0:
+                # Find violet pulse immediately preceding the current blue pulse
+                # Filter for violet pulses < t_blue
+                pre_vs = rising_violet[rising_violet < t_blue]
+                if len(pre_vs) > 0:
+                    t_violet = pre_vs[-1]
+                    # Sanity check: Should be close (within ~100ms)
+                    if abs(t_blue - t_violet) < config.ANALOG_SAMPLING_RATE * 0.1:
+                        frame_time_map[v_frame] = t_violet
+            
+            curr_frame -= 2
+            curr_pulse_idx -= 1
+            
+        # 7. Calculate Offset (Frame 0 vs Start)
+        if 0 in frame_time_map:
+            p0 = frame_time_map[0]
+            offset_s = (p0 - start_sample) / config.ANALOG_SAMPLING_RATE
+            if verbose:
+                print(f"    Offset found (Frame 0 - Start): {offset_s:.6f} s")
+        else:
+            if verbose:
+                print(f"    Warning: Frame 0 not mapped. Earliest mapped: {min(frame_time_map.keys())}")
+                
+        # 8. Collect Global Data
+        t_hdf5_start = h_trial['start_time_s']
+        t_start_local_s = start_sample / config.ANALOG_SAMPLING_RATE
+        
+        trial_vals = []
+        for f_idx in sorted(frame_time_map.keys()):
+            pulse_samp = frame_time_map[f_idx]
+            t_rel = (pulse_samp - start_sample) / config.ANALOG_SAMPLING_RATE # seconds relative to start
+            if t_rel < 0: # frames before start?
+                pass
+            
+            # Global Time
+            t_glob = t_hdf5_start + t_rel
+            
+            val = frame_means[f_idx]
+            
+            # Determine if Blue or Violet
+            # last_valid_idx is anchored to Blue. Steps of 2.
+            # So if (last_valid_idx - f_idx) is even -> Blue
+            is_blue = (last_valid_idx - f_idx) % 2 == 0
+            
+            if is_blue:
+                global_blue_times.append(t_glob)
+                global_blue_vals.append(val)
+                trial_vals.append(val)
+            
+            # Always add to "All" lists for Frame Index alignment
+            global_all_times.append(t_glob)
+            global_all_frame_indices.append(f_idx)
+            
+        trial_blue_data.append(trial_vals)
+
+        # 9. Plotting (Selected trials)
+        if is_trial_to_plot(i):
+            try:
+                # Prepare data
+                # HDF5
+                h_s = max(0, h_trial['start_sample'] - 2000)
+                h_e = min(hdf5_data.shape[0], h_trial['stop_sample'] + 2000)
+                # t_h in seconds relative to HDF5 Start of this trial
+                t_h = (np.arange(h_s, h_e) - h_trial['start_sample']) / config.HDF5_SAMPLING_RATE
+                
+                c3 = normalize_arr(hdf5_data[h_s:h_e, 3])
+                c4 = normalize_arr(hdf5_data[h_s:h_e, 4])
+                c6 = normalize_arr(hdf5_data[h_s:h_e, 6])
+                
+                # Analog
+                # t_a relative to Analog Start of this trial
+                t_a = (np.arange(adat.shape[1]) - start_sample) / config.ANALOG_SAMPLING_RATE
+                c15 = normalize_arr(adat[1].astype(float)) * 0.1
+                c16 = normalize_arr(adat[2].astype(float)) * 0.1
+                # Plot Analog Ch4 (Potential Stop) to debug
+                c4_analog = normalize_arr(adat[4].astype(float))
+                
+                # Frames
+                ft_x = []
+                ft_y = []
+                norm_means = normalize_arr(frame_means)
+                for f, p in frame_time_map.items():
+                    ft_x.append((p - start_sample) / config.ANALOG_SAMPLING_RATE)
+                    ft_y.append(norm_means[f])
+                
+                plt.figure(figsize=(12, 6))
+                plt.plot(t_h, c3, 'g', alpha=0.5, label='HDF5 Ch3 (Start)')
+                plt.plot(t_h, c4, 'r', alpha=0.5, label='HDF5 Ch4 (Stop)')
+                plt.plot(t_h, c6, 'orange', alpha=0.5, label='HDF5 Ch6 (Photo)')
+                
+                # Limit analog plot to t_h range if possible
+                if len(t_h) > 0:
+                     min_t, max_t = t_h[0], t_h[-1]
+                     mask = (t_a >= min_t) & (t_a <= max_t)
+                     if np.any(mask):
+                         plt.plot(t_a[mask], c15[mask], 'b', lw=1, label='A1 Blue LED x0.1')
+                         plt.plot(t_a[mask], c16[mask], 'purple', lw=1, label='A2 Vio LED x0.1')
+                         plt.plot(t_a[mask], c4_analog[mask], 'k', alpha=0.3, label='Analog Ch4 (Signal)')
+
+                plt.scatter(ft_x, ft_y, c='blue', s=15, zorder=5, label='Blue Frames')
+                
+                # Mark the Projected HDF5 Stop
+                t_stop_detected = (stop_idx - start_sample) / config.ANALOG_SAMPLING_RATE
+                plt.axvline(t_stop_detected, color='k', linestyle='--', alpha=0.8, label='Projected HDF5 Stop')
+
+                plt.title(f"Trial {i} Alignment (Frame -8 to HDF5 Stop)")
+                plt.xlabel("Time (s) from Start")
+                plt.legend(loc='upper right')
+                plt.grid(True, alpha=0.3)
+                
+                fpath = os.path.join(output_dir, f"alignment_check_trial_{i}.png")
+                plt.savefig(fpath)
+                plt.close()
+            except Exception as e:
+                if verbose: print(f"    Error plotting trial {i}: {e}")
+            
+    # Sort the global 'all' arrays because they might be slightly out of order if we care, 
+    # but we appended in strictly increasing frame order (sorted keys), so t_glob should be sorted too.
+    # Just to be safe for interpolation later, we can rely on augment function sorting.
+            
+    return global_blue_times, global_blue_vals, global_all_times, global_all_frame_indices, trial_blue_data
 
 
 # ============================================================================
@@ -613,49 +729,139 @@ def create_consolidated_matrix(data, analog_trials, trials_hdf5, config=Alignmen
             val_10k = np.interp(t_10k, t_1k, val_1k)
             full_matrix[start_sample_idx:end_sample_idx, col_idx] = val_10k
     
+    # Normalize Analog columns globally (to match HDF5 0-1 scaling)
+    if verbose: print("  Normalizing analog columns to 0-1...")
+    for ch in range(n_analog_ch):
+        col_idx = n_hdf5_ch + ch
+        full_matrix[:, col_idx] = normalize_arr(full_matrix[:, col_idx])
+
     if verbose:
         print(f"  Matrix shape: {full_matrix.shape}")
     
     return full_matrix
 
 
-def add_blue_trace_to_matrix(full_matrix, global_blue_times, global_blue_vals, 
-                             config=AlignmentConfig(), verbose=True):
+def augment_matrix_with_aligned_data(full_matrix, global_blue_times, global_blue_vals, 
+                                     global_all_times, global_all_frame_indices, trials_hdf5,
+                                     config=AlignmentConfig(), verbose=True):
     """
-    Add interpolated blue trace to consolidated matrix.
+    Add blue trace and additional metadata columns (Trial Index, Frame Index) to consolidated matrix.
+    
+    New Channels:
+        - 19: Blue Trace (Normalized 0-1)
+        - 20: Trial Index (NaN between trials)
+        - 21: Aligned Frame Index (Nearest mapping, valid only during trials)
     
     Args:
         full_matrix: Existing consolidated matrix
-        global_blue_times: List of frame times (seconds)
-        global_blue_vals: List of frame values
+        global_blue_times: List of BLUE frame times (seconds)
+        global_blue_vals: List of BLUE frame values
+        global_all_times: List of ALL frame times (Blue + Violet)
+        global_all_frame_indices: List of ALL frame indices
+        trials_hdf5: List of HDF5 trial dicts (for trial boundaries)
         config: Configuration object
         verbose: Print information
         
     Returns:
-        Extended matrix with blue trace as last column
+        Extended matrix
     """
     if verbose:
-        print("\nAdding raw Blue trace to matrix...")
+        print("\nAugmenting matrix with Aligned Data (Blue Trace, Trial Idx, Frame Idx)...")
     
-    # Create extended matrix
     n_existing_ch = full_matrix.shape[1]
-    new_full_matrix = np.zeros((full_matrix.shape[0], n_existing_ch + 1), dtype=np.float32)
+    n_new_cols = 3
+    new_full_matrix = np.zeros((full_matrix.shape[0], n_existing_ch + n_new_cols), dtype=np.float32)
     new_full_matrix[:, :n_existing_ch] = full_matrix
     
-    # Sort blue trace data
-    srt = np.argsort(global_blue_times)
-    t_source = np.array(global_blue_times)[srt]
-    v_source = np.array(global_blue_vals)[srt]
+    # Init new columns with NaN
+    new_full_matrix[:, n_existing_ch + 1] = np.nan # Trial Index
+    new_full_matrix[:, n_existing_ch + 2] = np.nan # Frame Index
     
-    # Target timeline
+    # 1. Fill Blue Trace (Col 19)
+    if len(global_blue_times) > 0:
+        # Sort blue trace data
+        srt = np.argsort(global_blue_times)
+        t_source = np.array(global_blue_times)[srt]
+        v_source = np.array(global_blue_vals)[srt]
+        
+        # Normalize blue trace values to 0-1
+        v_source = normalize_arr(v_source)
+        
+        # Target timeline
+        n_samples = full_matrix.shape[0]
+        t_target = np.arange(n_samples) / config.HDF5_SAMPLING_RATE
+        
+        # Interpolate Blue Trace (Linear)
+        blue_trace = np.interp(t_target, t_source, v_source, left=0, right=0)
+        new_full_matrix[:, n_existing_ch] = blue_trace.astype(np.float32)
+    
+    # 2. Fill Trial Index (Col 20)
+    if verbose: print("  Filling Trial Index column...")
     n_samples = full_matrix.shape[0]
-    t_target = np.arange(n_samples) / config.HDF5_SAMPLING_RATE
+    count_trials_filled = 0
+    for trial in trials_hdf5:
+        idx_start = trial['start_sample']
+        idx_stop = trial['stop_sample']
+        trial_id = trial['trial_idx']
+        
+        # Clip to matrix bounds
+        idx_start = max(0, idx_start)
+        idx_stop = min(n_samples, idx_stop)
+        
+        if idx_start < idx_stop:
+            new_full_matrix[idx_start:idx_stop, n_existing_ch + 1] = float(trial_id)
+            count_trials_filled += (idx_stop - idx_start)
+
+    if verbose: print(f"  Trial Indices filled: {count_trials_filled} / {n_samples} samples")
+
+    # 3. Fill Aligned Frame Index (Col 21) - "Nearest" interpolation using ALL frames
+    if verbose: print("  Filling Aligned Frame Index column (Nearest Neighbor - All Frames)...")
     
-    # Interpolate
-    blue_trace = np.interp(t_target, t_source, v_source, left=0, right=0)
-    
-    # Assign to last column
-    new_full_matrix[:, n_existing_ch] = blue_trace.astype(np.float32)
+    if len(global_all_times) > 0:
+        srt_all = np.argsort(global_all_times)
+        t_all_source = np.array(global_all_times)[srt_all]
+        f_all_source = np.array(global_all_frame_indices)[srt_all]
+        
+        # Target timeline (t_target is same as above)
+        t_target = np.arange(n_samples) / config.HDF5_SAMPLING_RATE
+        
+        # Find insertion points
+        idx = np.searchsorted(t_all_source, t_target)
+        idx = np.clip(idx, 1, len(t_all_source)-1)
+        
+        # Compare distances to left (idx-1) and right (idx) neighbors
+        left_t = t_all_source[idx-1]
+        right_t = t_all_source[idx]
+        left_dist = np.abs(t_target - left_t)
+        right_dist = np.abs(t_target - right_t)
+        
+        # Choose index of closer neighbor
+        use_right = right_dist < left_dist
+        final_idx = np.where(use_right, idx, idx-1)
+        
+        # Calculate Minimum Distance
+        min_dist = np.where(use_right, right_dist, left_dist)
+
+        # Get frame indices
+        interpolated_frame_indices = f_all_source[final_idx].astype(np.float32)
+        
+        # Thresholding: If nearest TTL is too far, set to NaN
+        # We use 0.05s (50ms) as a safe upper bound.
+        TTL_MAX_DIST_S = 0.05
+        invalid_mask = min_dist > TTL_MAX_DIST_S
+        interpolated_frame_indices[invalid_mask] = np.nan
+        
+        # Apply to matrix
+        new_full_matrix[:, n_existing_ch + 2] = interpolated_frame_indices
+        
+        # Masking: Set Frame Index to NaN where Trial Index is NaN (inter-trial periods)
+        mask_no_trial = np.isnan(new_full_matrix[:, n_existing_ch + 1])
+        new_full_matrix[mask_no_trial, n_existing_ch + 2] = np.nan
+        
+        if verbose:
+            valid_frames = np.sum(~np.isnan(new_full_matrix[:, n_existing_ch + 2]))
+            print(f"  Frame Indices filled: {valid_frames} / {n_samples} samples")
+            print(f"  (Masked {np.sum(invalid_mask)} samples due to distance > {TTL_MAX_DIST_S}s)")
     
     if verbose:
         print(f"  Extended matrix shape: {new_full_matrix.shape}")
@@ -696,10 +902,10 @@ CHANNEL_COLORS = {
 
 def plot_trigger_alignment(data, analog_trials, trials_hdf5, output_dir, 
                            config=AlignmentConfig(), n_plot=5):
-    """Plot alignment verification for first N trials in combined graphs."""
-    print("\nGenerating combined trigger alignment plot...")
+    """Plot alignment verification for selected trials in combined graphs."""
+    print("\\nGenerating combined trigger alignment plot...")
     
-    mapped_count = min(len(trials_hdf5), len(analog_trials), n_plot)
+    mapped_count = min(len(trials_hdf5), len(analog_trials))
     
     # Create figure with 2 subplots: Ch3 verification and Ch1/Ch4 stimulus verification
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(20, 10))
@@ -715,8 +921,13 @@ def plot_trigger_alignment(data, analog_trials, trials_hdf5, output_dir,
     yticks_locs_2 = []
     yticks_labels_2 = []
     
+    plot_idx = 0
+    
     # --- Subplot 1: HDF5 Ch3 vs Analog Ch3 (Acquisition Start Verification) ---
     for i in range(mapped_count):
+        if not is_trial_to_plot(i):
+            continue
+            
         h_trial = trials_hdf5[i]
         a_trial = analog_trials[i]
         
@@ -735,17 +946,19 @@ def plot_trigger_alignment(data, analog_trials, trials_hdf5, output_dir,
         analog_time = (np.arange(len(a_sig)) - a_trig_idx) / config.ANALOG_SAMPLING_RATE
         
         # Plot with offset for visibility
-        offset = i * 1.2
+        offset = plot_idx * 1.2
         ax1.plot(hdf5_time, hdf5_segment + offset, 
                 color=hdf5_ch3_color, linewidth=1.5, 
-                label='HDF5 Ch3 (Acq Start)' if i == 0 else "")
+                label='HDF5 Ch3 (Acq Start)' if plot_idx == 0 else "")
         ax1.plot(analog_time, a_sig + offset, 
                 color=analog_ch3_color, linestyle='--', linewidth=1.2, alpha=0.8,
-                label='Analog Ch3 (Start Rx)' if i == 0 else "")
+                label='Analog Ch3 (Start Rx)' if plot_idx == 0 else "")
         
         # Store y-tick positions and labels
         yticks_locs_1.append(offset + 0.5)
         yticks_labels_1.append(f'Trial {i}')
+        
+        plot_idx += 1
     
     ax1.set_title('Acquisition Start Trigger Verification (HDF5 Ch3 vs Analog Ch3)', fontsize=12, fontweight='bold')
     ax1.set_xlabel('Time relative to Trigger (s)')
@@ -757,7 +970,11 @@ def plot_trigger_alignment(data, analog_trials, trials_hdf5, output_dir,
     ax1.grid(True, alpha=0.3)
     
     # --- Subplot 2: HDF5 Ch1 vs Analog Ch4 (Stimulus Timing Verification) ---
+    plot_idx = 0
     for i in range(mapped_count):
+        if not is_trial_to_plot(i):
+            continue
+            
         h_trial = trials_hdf5[i]
         a_trial = analog_trials[i]
         
@@ -776,17 +993,19 @@ def plot_trigger_alignment(data, analog_trials, trials_hdf5, output_dir,
         analog_time = (np.arange(len(a_ch4)) - a_trig_idx) / config.ANALOG_SAMPLING_RATE
         
         # Plot with offset
-        offset = i * 1.2
+        offset = plot_idx * 1.2
         ax2.plot(hdf5_time, normalize_arr(hdf5_ch1_segment) + offset, 
                 color=hdf5_ch1_color, linewidth=1.5,
-                label='HDF5 Ch1 (Block Timing)' if i == 0 else "")
+                label='HDF5 Ch1 (Block Timing)' if plot_idx == 0 else "")
         ax2.plot(analog_time, a_ch4 + offset, 
                 color=analog_ch4_color, linestyle='--', linewidth=1.2, alpha=0.8,
-                label='Analog Ch4 (Stim)' if i == 0 else "")
+                label='Analog Ch4 (Stim)' if plot_idx == 0 else "")
         
         # Store y-tick positions and labels
         yticks_locs_2.append(offset + 0.5)
         yticks_labels_2.append(f'Trial {i}')
+        
+        plot_idx += 1
     
     ax2.set_title('Stimulus Timing Verification (HDF5 Ch1 vs Analog Ch4)', fontsize=12, fontweight='bold')
     ax2.set_xlabel('Time relative to Trigger (s)')
@@ -912,13 +1131,16 @@ def plot_blue_behavior_overlay(full_matrix, trials_hdf5, output_dir, config=Alig
     photodiode_color = CHANNEL_COLORS.get(6, '#e377c2')
     rotary_color = CHANNEL_COLORS.get(7, '#7f7f7f')
     
-    # Plot each trial separately
+    # Plot each trial separately if selected
     for trial_idx, trial in enumerate(trials_hdf5):
+        if not is_trial_to_plot(trial_idx):
+            continue
+
         fig, ax = plt.subplots(figsize=(15, 5))
         
-        # Get trial time window
+        # Get trial time window (properly calculated)
         trial_start = trial['start_time_s']
-        trial_stop = trial['stop_sample'] / config.HDF5_SAMPLING_RATE
+        trial_stop = trial_start + (trial['stop_sample'] - trial['start_sample']) / config.HDF5_SAMPLING_RATE
         
         # Add some padding
         window_start = max(0, trial_start - 2)  # 2s before
@@ -1050,19 +1272,26 @@ def run_alignment_pipeline(data_dir, output_dir=None, verbose=True):
         print(f"  Found {len(frameTimes_files)} frameTimes files")
     
     # Step 6: Process frames with offset (THE KEY STEP)
-    global_blue_times, global_blue_vals = process_frames_with_offset(
-        frames_files, frameTimes_files, analog_trials, trials_hdf5, 
+    global_blue_times, global_blue_vals, global_all_times, global_all_frame_indices, trial_blue_data = process_frames_with_offset(
+        frames_files, frameTimes_files, analog_trials, trials_hdf5, data, output_dir, 
         config=config, verbose=verbose
     )
     
-    # Step 7: Add blue trace to matrix
+    
+    # Step 7: Add blue trace and metadata to matrix
     print("\n" + "="*70)
-    print("STEP 7: Adding Blue Trace to Matrix")
+    print("STEP 7: Augmenting Matrix (Blue Trace, Trial Idx, Frame Idx)")
     print("="*70)
     
     if global_blue_times and global_blue_vals:
-        final_matrix = add_blue_trace_to_matrix(full_matrix, global_blue_times, 
-                                                global_blue_vals, config=config, verbose=verbose)
+        final_matrix = augment_matrix_with_aligned_data(full_matrix, 
+                                                      global_blue_times, 
+                                                      global_blue_vals, 
+                                                      global_all_times,
+                                                      global_all_frame_indices,
+                                                      trials_hdf5,
+                                                      config=config, 
+                                                      verbose=verbose)
     else:
         if verbose:
             print("  Warning: No blue trace data available")
@@ -1084,6 +1313,10 @@ def run_alignment_pipeline(data_dir, output_dir=None, verbose=True):
                 ["a0_timing", "a1_blue_led", "a2_violet_led", "a3_start", "a4_stim"]
     if final_matrix.shape[1] > 19:
         col_names.append("blue_trace_mean")
+    if final_matrix.shape[1] > 20: 
+        col_names.append("trial_index")
+    if final_matrix.shape[1] > 21:
+        col_names.append("aligned_frame_index")
     
     names_path = os.path.join(output_dir, "channel_names.txt")
     with open(names_path, 'w') as f:
@@ -1131,22 +1364,21 @@ def run_alignment_pipeline(data_dir, output_dir=None, verbose=True):
 # ============================================================================
 
 if __name__ == "__main__":
-    import argparse
-    
+
     parser = argparse.ArgumentParser(
         description="Widefield-HDF5 Alignment Pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Example usage:
-    python alignment_pipeline.py  # Uses global DATA_DIR variable
+    python alignment_pipeline.py  # Uses default DATA_DIR
     python alignment_pipeline.py --data_dir "D:\\Data\\experiment_folder"
     python alignment_pipeline.py --data_dir "D:\\Data\\experiment_folder" --output_dir "D:\\Output"
         """
     )
     
-    parser.add_argument('--data_dir', type=str, default=DATA_DIR,
-                       help=f'Directory containing HDF5, Analog, and Frames files (default: {DATA_DIR})')
-    parser.add_argument('--output_dir', type=str, default=OUTPUT_DIR,
+    parser.add_argument('--data_dir', type=str, default=DEFAULT_DATA_DIR,
+                       help=f'Directory containing HDF5, Analog, and Frames files (default: {DEFAULT_DATA_DIR})')
+    parser.add_argument('--output_dir', type=str, default=None,
                        help='Output directory (default: data_dir/alignment)')
     parser.add_argument('--quiet', action='store_true',
                        help='Suppress verbose output')
