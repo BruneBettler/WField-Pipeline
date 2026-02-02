@@ -180,6 +180,8 @@ def generate_video(data_dir, output_dir=None, output_filename="alignment_side_by
     last_eye_frame = None
     current_eye_pos = -1
 
+    alignment_indices = []
+
     for global_idx in tqdm.tqdm(range(n_wf_frames)):
         
         # Determine Trial
@@ -248,10 +250,26 @@ def generate_video(data_dir, output_dir=None, output_filename="alignment_side_by
         cv2.putText(canvas, txt2, (wf_width+10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
         out_writer.write(canvas)
+        alignment_indices.append([global_idx, eye_idx_display])
         
     out_writer.release()
     eye_cap.release()
     hf.close()
+
+    # Save alignment indices
+    alignment_arr = np.array(alignment_indices).T
+    base_name = os.path.splitext(output_filename)[0]
+    idx_path = os.path.join(output_dir, f"{base_name}_indices.npy")
+    np.save(idx_path, alignment_arr)
+    print(f"Alignment indices saved to {idx_path}")
+
+    # Save text description
+    desc_path = os.path.join(output_dir, f"{base_name}_indices_README.txt")
+    with open(desc_path, 'w') as f:
+        f.write("Row 0: Widefield Frame Index\n")
+        f.write("Row 1: Eye Camera Frame Index (or -1 if no sync)\n")
+    print(f"Indices description saved to {desc_path}")
+
     print(f"\nDone. Saved to {output_path}")
 
 if __name__ == "__main__":
