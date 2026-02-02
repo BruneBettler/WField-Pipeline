@@ -43,11 +43,16 @@ DEFAULT_DATA_DIR = r"D:\Vanessa_test_data\Tests_Jan23\23-Jan-2026_ledTTL_10rando
 
 def normalize_frame(frame, p_min=1, p_max=99):
     """Normalize frame to 0-255 range based on percentiles."""
-    frame = np.nan_to_num(frame)
-    vmin, vmax = np.percentile(frame, [p_min, p_max])
+    # Use nanpercentile to ignore background NaNs/Zeros during range calculation
+    vmin, vmax = np.nanpercentile(frame, [p_min, p_max])
+    
+    # Fill NaNs with vmin for now (will be masked later)
+    frame_filled = np.nan_to_num(frame, nan=vmin)
+    
     if vmax == vmin:
-        return np.zeros_like(frame, dtype=np.uint8)
-    norm = (frame - vmin) / (vmax - vmin)
+        return np.zeros_like(frame_filled, dtype=np.uint8)
+        
+    norm = (frame_filled - vmin) / (vmax - vmin)
     norm = np.clip(norm, 0, 1)
     return (norm * 255).astype(np.uint8)
 
@@ -265,8 +270,10 @@ def generate_video(data_dir, output_dir=None, output_filename="alignment_side_by
         # Get Widefield
         raw_frame = wf_dset[global_idx]
         
-        # Capture NaNs for fallback masking
+        # Capture NaNs AND Zeros (likely padding) for fallback masking
         nan_mask = np.isnan(raw_frame)
+        if raw_frame.dtype.kind == 'f':
+             nan_mask |= (raw_frame == 0)
         
         w_img = normalize_frame(raw_frame, p_min=p_min, p_max=p_max)
         
@@ -285,7 +292,8 @@ def generate_video(data_dir, output_dir=None, output_filename="alignment_side_by
                  # Try resizing mask? Or just skip
                  pass
         
-        # Fallback: Apply NaN mask from data itself
+        # Fallback: Apply NaN/Zero mask from data itself
+        # This fixes the "Blue Border" if mask is missing or data has 0-padding
         if np.any(nan_mask):
             w_color[nan_mask] = 0
 
