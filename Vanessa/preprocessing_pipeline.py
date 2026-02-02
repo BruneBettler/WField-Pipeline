@@ -6,6 +6,7 @@ import h5py
 import time
 import argparse
 import numpy as np
+import cv2
 import matplotlib.pyplot as plt
 from matplotlib import animation
 from tqdm import tqdm
@@ -337,7 +338,7 @@ def step6_deltaF(hdf5_file_path, dataset_type):
         
         print("Done deltaF")
 
-def step7_visualization(hdf5_file_path, output_folder, dataset_type):
+def step7_visualization(hdf5_file_path, output_folder, dataset_type, video_cmap='jet', max_frames=2000):
     print("\n--- Step 7: Visualization ---")
     
     with h5py.File(hdf5_file_path, 'r') as f:
@@ -417,16 +418,105 @@ def step7_visualization(hdf5_file_path, output_folder, dataset_type):
             print(f"Saved: {os.path.join(output_folder, 'Blue_vs_Violet_Trace.png')}")
 
         if processed_dset_name:
-            dset = f[dataset_type][processed_dset_name]
-            print(f"Generating video preview for {processed_dset_name}...")
-            preview_frames = dset.shape[0] 
-            if dset.ndim == 3:
-                data_sample = dset[:preview_frames, :, :]
-            else:
-                data_sample = dset[:preview_frames, 0, :, :]
+            # Generate Side-by-Side Video (Raw Blue vs dF/F)
+            print(f"Generating Side-by-Side preview: Raw Blue vs {processed_dset_name}...")
+            
+            # Use 'motion_corrected' Channel 0 (Blue) as the "Raw" comparison
+            # It's better than raw_frames because it's motion corrected (apple to apples spatial), 
+            # but still "Raw Intensity" vs "dF/F"
+            if 'motion_corrected' in f[dataset_type]:
+                raw_dset = f[dataset_type]['motion_corrected']
+                proc_dset = f[dataset_type][processed_dset_name]
+                
+                # Determine limit
+                n_frames = min(proc_dset.shape[0], max_frames)
 
-            video_path = os.path.join(output_folder, "preview_video.mp4")
-            save_video_of_stack(data_sample, video_path, fps=20, title=processed_dset_name)
+                # Setup Video Writer
+                video_path = os.path.join(output_folder, "preview_side_by_side.mp4")
+                
+                # Get dimensions from first frame
+                H, W = proc_dset.shape[1], proc_dset.shape[2]
+                out_shape = (W * 2, H) # Side by side
+                
+                # Map string cmap to cv2 constant
+                cmap_str = video_cmap.upper()
+                if not hasattr(cv2, f'COLORMAP_{cmap_str}'):
+                    print(f"Warning: Colormap {video_cmap} not found, defaulting to JET")
+                    cmap = cv2.COLORMAP_JET
+                else:
+                    cmap = getattr(cv2, f'COLORMAP_{cmap_str}')
+                
+                # Try to load mask for background suppression
+                mask = None
+                mask_candidates = glob.glob(os.path.join(output_folder, "*_full_mask.npy")) + \
+                                  glob.glob(os.path.join(output_folder, "brain_mask.npy"))
+                if mask_candidates:
+                    try:
+                        mask = np.load(mask_candidates[0]).astype(bool)
+                    except: pass
+
+                # Initialize Writer
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                writer = cv2.VideoWriter(video_path, fourcc, 20.0, out_shape) # 10Hz data at 20fps = 2x speed
+                
+                # Calculate percentiles for Raw normalization once (to fix contrast)
+                # Take a sample
+                sample_idx = np.linspace(0, n_frames-1, min(100, n_frames), dtype=int)
+                sample_raw = raw_dset[sample_idx, 0, :, :]
+                p1_raw, p99_raw = np.nanpercentile(sample_raw, [1, 99])
+                
+                # For dF/F, we might want dynamic or fixed? Usually dF/F is -0.1 to +0.1 or so.
+                # Let's do per-frame or fixed? Fixed is better to see temporal changes.
+                sample_proc = proc_dset[sample_idx, :, :]
+                p1_proc, p99_proc = np.nanpercentile(sample_proc, [1, 99])
+                
+                print(f"  Normalization Ranges -- Raw: [{p1_raw:.1f}, {p99_raw:.1f}], dF/F: [{p1_proc:.5f}, {p99_proc:.5f}]")
+                
+                chunk_size = 100
+                for i in tqdm(range(0, n_frames, chunk_size), desc="Writing Video"):
+                    end = min(i + chunk_size, n_frames)
+                    
+                    # Read Chunks
+                    # Raw: (Time, 2, H, W) -> Extract Channel 0 (Blue)
+                    raw_chunk = raw_dset[i:end, 0, :, :] 
+                    proc_chunk = proc_dset[i:end, :, :]
+                    
+                    # Normalize Raw -> Grayscale
+                    raw_norm = (raw_chunk - p1_raw) / (p99_raw - p1_raw)
+                    raw_norm = np.clip(raw_norm, 0, 1) * 255
+                    raw_norm = np.nan_to_num(raw_norm, nan=0)
+                    raw_uint8 = raw_norm.astype(np.uint8)
+                    
+                    # Normalize dF/F -> Colormap
+                    proc_norm = (proc_chunk - p1_proc) / (p99_proc - p1_proc)
+                    proc_norm = np.clip(proc_norm, 0, 1) * 255
+                    proc_norm = np.nan_to_num(proc_norm, nan=0)
+                    proc_uint8 = proc_norm.astype(np.uint8)
+                    
+                    for j in range(end - i):
+                        # Make Raw BGR
+                        frame_raw = cv2.cvtColor(raw_uint8[j], cv2.COLOR_GRAY2BGR)
+                        
+                        # Make dF/F (Masked + JET)
+                        frame_proc_bw = proc_uint8[j]
+                        frame_proc_color = cv2.applyColorMap(frame_proc_bw, cmap)
+                        
+                        if mask is not None:
+                             frame_proc_color[~mask] = 0
+                             
+                        # Combine
+                        combined = np.hstack([frame_raw, frame_proc_color])
+                        
+                        # Add text labels
+                        cv2.putText(combined, "Raw (Blue)", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                        cv2.putText(combined, "dF/F", (W + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                        
+                        writer.write(combined)
+                        
+                writer.release()
+                print(f"Saved preview: {video_path}")
+            else:
+                print("Cannot create side-by-side: 'motion_corrected' dataset not found.")
 
 # ==========================================
 # Main
@@ -483,7 +573,7 @@ def get_or_create_hdf5(parent_path):
         print("No existing HDF5 file found. Creating new...")
         return create_hdf5(parent_path)
 
-def run_pipeline(exp_path, dataset_type, overwrite_raw):
+def run_pipeline(exp_path, dataset_type, overwrite_raw, video_cmap='jet', max_frames=2000):
     # Parameters (could be args if needed)
     MC_NREFERENCE = 60
     MC_CHUNKSIZE = 512
@@ -504,7 +594,7 @@ def run_pipeline(exp_path, dataset_type, overwrite_raw):
         path_to_mask = step3_and_4_masking(hdf5_file_path, hdf5_creation_folder_path, dataset_type)
         step5_hemo_correction(hdf5_file_path, path_to_mask, dataset_type, HM_HIGHPASS)
         step6_deltaF(hdf5_file_path, dataset_type)
-        step7_visualization(hdf5_file_path, hdf5_creation_folder_path, dataset_type)
+        step7_visualization(hdf5_file_path, hdf5_creation_folder_path, dataset_type, video_cmap, max_frames)
         
         print("\nPreprocessing pipeline completed successfully!")
         
@@ -519,6 +609,8 @@ if __name__ == "__main__":
     parser.add_argument('--data_dir', type=str, required=True, help="Path to experiment data (folder containing .dat files)")
     parser.add_argument('--dataset_type', type=str, default='led', help="Dataset type (led/widefield)")
     parser.add_argument('--overwrite', action='store_true', help="Overwrite raw frames if they exist")
+    parser.add_argument('--video_cmap', type=str, default='jet', help="Colormap for preview video (default: jet)")
+    parser.add_argument('--max_frames', type=int, default=2000, help="Max frames for preview video (default: 2000)")
     
     args = parser.parse_args()
     
@@ -526,4 +618,4 @@ if __name__ == "__main__":
         print(f"Error: Data directory not found: {args.data_dir}")
         sys.exit(1)
         
-    run_pipeline(args.data_dir, args.dataset_type, args.overwrite)
+    run_pipeline(args.data_dir, args.dataset_type, args.overwrite, args.video_cmap, args.max_frames)

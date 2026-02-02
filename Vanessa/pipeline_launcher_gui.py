@@ -6,8 +6,9 @@ import numpy as np
 import h5py
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QLabel, QFileDialog, QListWidget, QListWidgetItem, 
-                             QCheckBox, QProgressBar, QTextEdit, QMessageBox, QLineEdit)
+                             QCheckBox, QProgressBar, QTextEdit, QMessageBox, QLineEdit, QComboBox)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt, QEventLoop
+from PyQt5.QtGui import QIntValidator
 
 # ==========================================
 # Setup Paths for Nicole
@@ -214,6 +215,20 @@ class PipelineLauncher(QMainWindow):
         self.txt_trials.setPlaceholderText("e.g. 'all', '1,3,5', '0'")
         self.txt_trials.setToolTip("Comma-separated list of trial indices to plot, or 'all'")
         param_layout.addWidget(self.txt_trials)
+        
+        param_layout.addWidget(QLabel("Video Colormap:"))
+        self.combo_cmap = QComboBox()
+        self.combo_cmap.addItems(['jet', 'viridis', 'plasma', 'inferno', 'magma', 'hot', 'bone', 'ocean', 'cool', 'gray'])
+        self.combo_cmap.setToolTip("Colormap for verification video")
+        param_layout.addWidget(self.combo_cmap)
+
+        param_layout.addWidget(QLabel("Preview Length:"))
+        self.txt_max_frames = QLineEdit("2000")
+        self.txt_max_frames.setFixedWidth(60)
+        self.txt_max_frames.setToolTip("Number of frames to generate for preview videos")
+        self.txt_max_frames.setValidator(QIntValidator(1, 100000))
+        param_layout.addWidget(self.txt_max_frames)
+        
         param_layout.addStretch()
         layout.addLayout(param_layout)
         
@@ -439,6 +454,15 @@ class PipelineLauncher(QMainWindow):
         t_txt = self.txt_trials.text().strip()
         if t_txt:
             flags.extend(['--trials_to_plot', t_txt])
+            
+        # Add colormap parameter
+        cmap = self.combo_cmap.currentText()
+        flags.extend(['--video_cmap', cmap])
+        
+        # Add max_frames parameter
+        mf = self.txt_max_frames.text().strip()
+        if mf:
+            flags.extend(['--max_frames', mf])
         
         self.log_text.clear()
         self.progress_bar.setValue(0)
@@ -449,6 +473,8 @@ class PipelineLauncher(QMainWindow):
         self.cb_skip_align.setEnabled(False)
         self.cb_skip_video.setEnabled(False)
         self.txt_trials.setEnabled(False)
+        self.combo_cmap.setEnabled(False)
+        self.txt_max_frames.setEnabled(False)
         
         self.worker = PipelineWorker(self.python_exe, self.process_script, selected_paths, flags)
         self.worker.log_signal.connect(self.append_log)
@@ -510,6 +536,8 @@ class PipelineLauncher(QMainWindow):
         self.cb_skip_align.setEnabled(True)
         self.cb_skip_video.setEnabled(True)
         self.txt_trials.setEnabled(True)
+        self.combo_cmap.setEnabled(True)
+        self.txt_max_frames.setEnabled(True)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

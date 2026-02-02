@@ -44,6 +44,8 @@ def main():
     parser.add_argument('--skip_alignment', action='store_true', help="Skip step 2 (Alignment)")
     parser.add_argument('--skip_video', action='store_true', help="Skip step 3 (Video Generation)")
     parser.add_argument('--trials_to_plot', type=str, default='all', help="Trials to plot in alignment step (e.g. 'all', '0,1,2')")
+    parser.add_argument('--video_cmap', type=str, default='jet', help="Colormap for verification video (e.g. jet, viridis, plasma)")
+    parser.add_argument('--max_frames', type=int, default=2000, help="Max frames for preview videos (default: 2000)")
     
     args = parser.parse_args()
     
@@ -58,7 +60,8 @@ def main():
     if not args.skip_preprocessing:
         # Args for preprocessing_pipeline.py
         # defined in: parser.add_argument('--data_dir'...)
-        run_step("preprocessing_pipeline.py", ["--data_dir", data_dir], "Preprocessing (Masking, Hemo, DeltaF)")
+        prep_args = ["--data_dir", data_dir, "--video_cmap", args.video_cmap, "--max_frames", str(args.max_frames)]
+        run_step("preprocessing_pipeline.py", prep_args, "Preprocessing (Masking, Hemo, DeltaF)")
     
     # --- Step 2: Alignment ---
     if not args.skip_alignment:
@@ -72,11 +75,8 @@ def main():
         
     # --- Step 3: Verification Video ---
     if not args.skip_video:
-        # Args for generate_alignment_video.py
-        # Passing output_dir to be inside alignment_verification
-        # Note: script defaults to alignment_verification if output_dir is omitted, but let's be explicit if needed.
-        # We will let the script handle the default folder structure.
-        run_step("generate_alignment_video.py", ["--data_dir", data_dir], "Generating Verification Video")
+        vid_args = ["--data_dir", data_dir, "--cmap", args.video_cmap]
+        run_step("generate_alignment_video.py", vid_args, "Generating Verification Video")
 
     print("\n\nAll pipeline steps completed successfully.")
 

@@ -70,11 +70,46 @@ def get_trial_frame_counts(data_dir):
 # MAIN
 # ============================================================================
 
-def generate_video(data_dir, output_dir=None, output_filename="alignment_side_by_side.mp4"):
+def generate_video(data_dir, output_dir=None, output_filename="alignment_side_by_side.mp4", 
+                   cmap_name='jet', p_min=1, p_max=99):
     
+    # Map string names to OpenCV Colormaps
+    CMAPS = {
+        'jet': cv2.COLORMAP_JET,
+        'viridis': cv2.COLORMAP_VIRIDIS,
+        'plasma': cv2.COLORMAP_PLASMA,
+        'inferno': cv2.COLORMAP_INFERNO,
+        'magma': cv2.COLORMAP_MAGMA,
+        'hot': cv2.COLORMAP_HOT,
+        'bone': cv2.COLORMAP_BONE,
+        'ocean': cv2.COLORMAP_OCEAN,
+        'cool': cv2.COLORMAP_COOL,
+        'gray': None # Special case
+    }
+    
+    if cmap_name.lower() not in CMAPS:
+        print(f"Warning: Colormap '{cmap_name}' not found. Using 'jet'. Options: {list(CMAPS.keys())}")
+        cmap_name = 'jet'
+    
+    selected_cmap = CMAPS[cmap_name.lower()]
+
     alignment_dir = os.path.join(data_dir, "alignment")
     preprocessed_dir = os.path.join(data_dir, "preprocessed_data")
     matrix_path = os.path.join(alignment_dir, "aligned_full_matrix.npy")
+    
+    # Load Brain Mask
+    brain_mask = None
+    mask_candidates = glob.glob(os.path.join(preprocessed_dir, "*_full_mask.npy")) + \
+                      glob.glob(os.path.join(preprocessed_dir, "brain_mask.npy"))
+    if mask_candidates:
+        mask_path = mask_candidates[0]
+        try:
+            brain_mask = np.load(mask_path).astype(bool)
+            print(f"Loaded mask/region for background suppression: {os.path.basename(mask_path)}")
+        except Exception as e:
+            print(f"Warning: Failed to load mask {mask_path}: {e}")
+    else:
+        print("Warning: No mask file found. Background will not be suppressed.")
     
     # Output path logic
     if output_dir is None:
@@ -190,8 +225,8 @@ def generate_video(data_dir, output_dir=None, output_filename="alignment_side_by
         cumulative += c
         trial_start_indices.append(cumulative)
         
-    mask = ~np.isnan(frame_indices) & ~np.isnan(trial_indices)
-    valid_samples = np.where(mask)[0]
+    valid_idx_mask = ~np.isnan(frame_indices) & ~np.isnan(trial_indices)
+    valid_samples = np.where(valid_idx_mask)[0]
     t_vals = trial_indices[valid_samples].astype(int)
     f_vals = frame_indices[valid_samples].astype(int)
     
@@ -228,9 +263,24 @@ def generate_video(data_dir, output_dir=None, output_filename="alignment_side_by
             has_sync = True
             
         # Get Widefield
-        w_img = normalize_frame(wf_dset[global_idx])
-        w_color = cv2.cvtColor(w_img, cv2.COLOR_GRAY2BGR)
+        raw_frame = wf_dset[global_idx]
+        w_img = normalize_frame(raw_frame, p_min=p_min, p_max=p_max)
         
+        # Apply Colormap
+        if selected_cmap is not None:
+            w_color = cv2.applyColorMap(w_img, selected_cmap)
+        else:
+            w_color = cv2.cvtColor(w_img, cv2.COLOR_GRAY2BGR)
+
+        # Apply Brain Mask (force background to black)
+        if brain_mask is not None:
+             # Handle shape mismatch if any
+             if brain_mask.shape == w_color.shape[:2]:
+                 w_color[~brain_mask] = 0
+             else:
+                 # Try resizing mask? Or just skip
+                 pass
+
         # Get Eye Frame
         e_img = None
         eye_idx_display = -1
@@ -302,9 +352,13 @@ if __name__ == "__main__":
     parser.add_argument('--data_dir', type=str, required=True, help="Path to data directory")
     parser.add_argument('--output_dir', type=str, default=None, help="Directory to save video (defaults to data_dir/alignment_verification)")
     parser.add_argument('--filename', type=str, default="alignment_side_by_side.mp4", help="Output filename")
+    parser.add_argument('--cmap', type=str, default='jet', help="Colormap (jet, viridis, plasma, etc.)")
+    parser.add_argument('--pmin', type=float, default=1.0, help="Min percentile for normalization")
+    parser.add_argument('--pmax', type=float, default=99.0, help="Max percentile for normalization")
     
     args = parser.parse_args()
     try:
-        generate_video(args.data_dir, args.output_dir, args.filename)
+        generate_video(args.data_dir, args.output_dir, args.filename, 
+                       cmap_name=args.cmap, p_min=args.pmin, p_max=args.pmax)
     except Exception as e:
         print(f"Error: {e}")

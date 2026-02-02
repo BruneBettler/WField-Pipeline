@@ -18,6 +18,9 @@ python pipeline_launcher_gui.py
 *   **Draw Mask Button**: Open the masking GUI for a selected session.
     *   Works on **Preprocessed Data** (HDF5) OR **Raw Data** (.dat).
     *   If you draw the mask before running the pipeline, the pipeline will seamlessly use it without stopping.
+*   **Video Settings**:
+    *   **Colormap**: Choose the colormap (e.g., 'jet', 'viridis') for the verification video and side-by-side preview.
+    *   **Preview Length**: Set the number of frames (default 2000) for the generated preview videos.
 *   **Progress Tracking**: Granular progress bars for the current session.
 *   **Interactive Error Handling**: If a mask is missing during a run, the Launcher will pause and ask you to draw it, then retry the session automatically.
 
@@ -25,13 +28,15 @@ python pipeline_launcher_gui.py
 The easiest way to run the full analysis via command line is using `process_and_align.py`. This script orchestrates all steps in the correct order.
 
 ```bash
-python process_and_align.py --data_dir "D:\Path\To\Experiment\Date_Folder"
+python process_and_align.py --data_dir "D:\Path\To\Experiment\Date_Folder" --video_cmap jet --max_frames 2000
 ```
 
 **Options:**
 *   `--skip_preprocessing`: Skip the raw frame processing steps.
 *   `--skip_alignment`: Skip the signal synchronization steps.
 *   `--skip_video`: Skip generating the verification video.
+*   `--video_cmap`: Colormap for videos (e.g., 'jet', 'viridis', 'plasma'). Default: 'jet'.
+*   `--max_frames`: Limit the number of frames for the preview videos to save time. Default: 2000.
 
 ---
 
