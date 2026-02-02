@@ -290,11 +290,12 @@ def step6_deltaF(hdf5_file_path, dataset_type):
             return
             
         dF_dset = hdf5_group['hemo_corrected']
-        F0_source_dset = hdf5_group['motion_corrected']
+        # Use hemo_corrected for F0 calculation as well
+        # F0_source_dset = hdf5_group['motion_corrected'] 
         n_frames = dF_dset.shape[0]
         
         # 1. Calculate Baseline F0
-        print("Calculating baseline F0 (using valid frames)...")
+        print("Calculating baseline F0 (using valid frames from hemo_corrected)...")
         
         sum_F0 = np.zeros(dF_dset.shape[1:], dtype=np.float64)
         valid_frame_count = 0
@@ -308,8 +309,9 @@ def step6_deltaF(hdf5_file_path, dataset_type):
             valid_mask = ~np.isnan(middle_pixel)
             
             if np.any(valid_mask):
-                raw_chunk = F0_source_dset[i:chunk_end, 0, :, :]
-                sum_F0 += np.sum(raw_chunk[valid_mask], axis=0)
+                # Use the hemo_corrected chunk itself
+                valid_chunk = dF_chunk[valid_mask]
+                sum_F0 += np.sum(valid_chunk, axis=0)
                 valid_frame_count += np.sum(valid_mask)
             
         if valid_frame_count == 0:
@@ -421,11 +423,13 @@ def step7_visualization(hdf5_file_path, output_folder, dataset_type, video_cmap=
             # Generate Side-by-Side Video (Raw Blue vs dF/F)
             print(f"Generating Side-by-Side preview: Raw Blue vs {processed_dset_name}...")
             
-            # Use 'motion_corrected' Channel 0 (Blue) as the "Raw" comparison
-            # It's better than raw_frames because it's motion corrected (apple to apples spatial), 
-            # but still "Raw Intensity" vs "dF/F"
-            if 'motion_corrected' in f[dataset_type]:
-                raw_dset = f[dataset_type]['motion_corrected']
+            # Check 'raw_frames' first, fall back to 'motion_corrected'
+            raw_dset_name = 'raw_frames' if 'raw_frames' in f[dataset_type] else 'motion_corrected'
+            
+            if raw_dset_name in f[dataset_type]:
+                raw_dset = f[dataset_type][raw_dset_name]
+                print(f"  Using '{raw_dset_name}' for left-side video panel.")
+                
                 proc_dset = f[dataset_type][processed_dset_name]
                 
                 # Determine limit
