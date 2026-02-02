@@ -505,6 +505,9 @@ def step7_visualization(hdf5_file_path, output_folder, dataset_type, video_cmap=
                     raw_norm = np.nan_to_num(raw_norm, nan=0)
                     raw_uint8 = raw_norm.astype(np.uint8)
                     
+                    # Store NaN mask from proc_chunk before filling (Fallback Mask)
+                    proc_nan_mask = np.isnan(proc_chunk)
+
                     # Normalize dF/F -> Colormap
                     proc_norm = (proc_chunk - p1_proc) / (p99_proc - p1_proc)
                     proc_norm = np.clip(proc_norm, 0, 1) * 255
@@ -519,9 +522,17 @@ def step7_visualization(hdf5_file_path, output_folder, dataset_type, video_cmap=
                         frame_proc_bw = proc_uint8[j]
                         frame_proc_color = cv2.applyColorMap(frame_proc_bw, cmap)
                         
+                        # Apply explicit file mask if exists
                         if mask is not None:
                              frame_proc_color[~mask] = 0
                              frame_raw[~mask] = 0
+                        
+                        # Fallback: Apply NaN mask from data itself (ensures black background even if file mask missing)
+                        # NaNs in dF/F usually indicate background
+                        frame_nan_mask = proc_nan_mask[j]
+                        if np.any(frame_nan_mask):
+                            frame_proc_color[frame_nan_mask] = 0
+                            frame_raw[frame_nan_mask] = 0
                              
                         # Combine
                         combined = np.hstack([frame_raw, frame_proc_color])
