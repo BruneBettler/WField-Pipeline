@@ -264,6 +264,10 @@ def generate_video(data_dir, output_dir=None, output_filename="alignment_side_by
             
         # Get Widefield
         raw_frame = wf_dset[global_idx]
+        
+        # Capture NaNs for fallback masking
+        nan_mask = np.isnan(raw_frame)
+        
         w_img = normalize_frame(raw_frame, p_min=p_min, p_max=p_max)
         
         # Apply Colormap
@@ -280,6 +284,10 @@ def generate_video(data_dir, output_dir=None, output_filename="alignment_side_by
              else:
                  # Try resizing mask? Or just skip
                  pass
+        
+        # Fallback: Apply NaN mask from data itself
+        if np.any(nan_mask):
+            w_color[nan_mask] = 0
 
         # Get Eye Frame
         e_img = None
