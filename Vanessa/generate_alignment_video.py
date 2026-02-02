@@ -271,9 +271,11 @@ def generate_video(data_dir, output_dir=None, output_filename="alignment_side_by
         raw_frame = wf_dset[global_idx]
         
         # Capture NaNs AND Zeros (likely padding) for fallback masking
-        nan_mask = np.isnan(raw_frame)
         if raw_frame.dtype.kind == 'f':
-             nan_mask |= (raw_frame == 0)
+            nan_mask = np.isnan(raw_frame) | (raw_frame == 0)
+        else:
+            # Integer types: just check for 0 (and dummy-check isnan to avoid attribute error if used later, though not needed here)
+            nan_mask = (raw_frame == 0)
         
         w_img = normalize_frame(raw_frame, p_min=p_min, p_max=p_max)
         
