@@ -139,12 +139,32 @@ def generate_video(data_dir, output_dir=None, output_filename="alignment_side_by
     # 6. Open Widefield HDF5
     print(f"Opening widefield data: {os.path.basename(wf_h5_path)}")
     hf = h5py.File(wf_h5_path, 'r')
-    if 'led/deltaF' in hf:
-        wf_dset = hf['led/deltaF']
-    elif 'led/data' in hf:
-        wf_dset = hf['led/data']
-    else:
-        raise ValueError("Could not find 'led/deltaF' or 'led/data'")
+    
+    # Try multiple possible dataset paths in order of preference
+    possible_paths = [
+        'led/deltaF',
+        'led/hemo_corrected',
+        'led/motion_corrected',
+        'led/raw_frames',
+        'led/data',
+        'widefield/deltaF',
+        'widefield/data'
+    ]
+    
+    wf_dset = None
+    dataset_name = None
+    
+    for p in possible_paths:
+        if p in hf:
+            wf_dset = hf[p]
+            dataset_name = p
+            print(f"  Using dataset: {p}")
+            break
+            
+    if wf_dset is None:
+        available = []
+        hf.visit(lambda name: available.append(name) if isinstance(hf[name], h5py.Dataset) else None)
+        raise ValueError(f"Could not find valid widefield dataset. Checked {possible_paths}. Available: {available}")
         
     n_wf_frames, wf_height, wf_width = wf_dset.shape
     print(f"  Processed Frames: {n_wf_frames}")
