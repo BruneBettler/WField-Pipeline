@@ -50,35 +50,34 @@ pip install -r requirements.txt
 
 ### 4. Run the Vanessa Pipeline
 
-To run the specific analysis workflow located in the `Vanessa` folder, navigate to that directory and execute the pipeline script:
+**Option A: GUI Launcher (Recommended)**
+The easiest way to process one or multiple sessions is via the graphical interface.
 
 ```bash
 cd Vanessa
-python run_pipeline.py
+python pipeline_launcher_gui.py
+```
+*   **Batch Processing**: Select multiple session folders to run in sequence.
+*   **Mask Drawing**: Use the "Draw Mask" button to create masks for sessions before or during processing. Supports masking on Raw Data (.dat) if HDF5 files are not yet created.
+*   **Resumable**: The pipeline automatically checks for existing output files and skips completed steps.
+
+**Option B: Command Line**
+To run the full workflow for a single session:
+
+```bash
+cd Vanessa
+python process_and_align.py --data_dir "D:\Path\To\Experiment\Folder"
 ```
 
-This pipeline performs the following steps:
+The pipeline performs the following steps:
 1.  **Load Raw Frames**: Loads `.dat` files into an HDF5 file.
-    *   *Automatic Frame Detection*: The pipeline automatically detects if the Blue or Violet LED fired first based on image intensity and corrects the channel order.
+    *   *Automatic Frame Detection*: Checks Blue/Violet order via intensity.
 2.  **Motion Correction**: Aligns frames to remove motion artifacts.
-3.  **Masking**: Launches a GUI to define the brain mask (User interaction required).
+3.  **Masking**: Checks for `brain_mask.npy`. If missing, the GUI Launcher will prompt you to create one.
 4.  **Hemodynamic Correction**: Removes hemodynamic artifacts using the Violet channel.
-5.  **Delta F/F**: Calculates the relative fluorescence change.
-6.  **Visualization**: Generates global traces and a video preview.
-
-### 5. Alignment and Synchronization (New)
-
-The `Vanessa/` folder also contains tools for synchronizing Widefield data with external behavioral inputs (e.g., eye camera, rotary encoder).
-
-**Tools available:**
-*   `alignment_pipeline.py`: Aligns analog signals (triggers, rotary encoder) and eye camera timestamps to the master WField clock (HDF5).
-*   `generate_alignment_video.py`: Creates a side-by-side verification video validating the sync between Eye Camera and Widefield frames.
-
-**To run the alignment verification:**
-```bash
-cd Vanessa
-python generate_alignment_video.py --data_dir "path/to/data"
-```
+5.  **Delta F/F**: Calculates relative fluorescence change.
+6.  **Alignment**: Synchronizes analog triggers (licks, wheel) and eye camera with WField frames.
+7.  **Verification**: Generates a side-by-side video of behavior and brain activity.
 
 ### Troubleshooting Channel Order (Blue vs Violet)
 The pipeline now uses an automatic intensity check (`check_blue_is_first_via_intensity`) to ensure Channel 0 is always Blue (Functional) and Channel 1 is always Violet (Ref/Hemo). If you suspect the channels are still swapped (e.g., if the DeltaF signal looks inverted), check the console output for "Detected Violet-First" messages or inspect the `Blue_vs_Violet_Trace.png` output.

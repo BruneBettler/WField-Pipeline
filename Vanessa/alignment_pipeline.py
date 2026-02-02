@@ -1208,6 +1208,21 @@ def run_alignment_pipeline(data_dir, output_dir=None, verbose=True):
     # Setup output directory
     if output_dir is None:
         output_dir = os.path.join(data_dir, "alignment")
+
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    # Check if alignment already exists
+    final_output_path = os.path.join(output_dir, "aligned_full_matrix.npy")
+    if os.path.exists(final_output_path):
+        if verbose:
+            print(f"\nAlignment matrix already exists at {final_output_path}. Skipping alignment.")
+        
+        return {
+            'matrix_path': final_output_path,
+            'status': 'skipped_exists',
+            'output_dir': output_dir
+        }
     
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -1380,11 +1395,26 @@ Example usage:
                        help=f'Directory containing HDF5, Analog, and Frames files (default: {DEFAULT_DATA_DIR})')
     parser.add_argument('--output_dir', type=str, default=None,
                        help='Output directory (default: data_dir/alignment)')
+    parser.add_argument('--trials_to_plot', type=str, default='all',
+                       help='Trials to generate verification plots for (e.g. "all", "0,1,5", "none")')
     parser.add_argument('--quiet', action='store_true',
                        help='Suppress verbose output')
     
     args = parser.parse_args()
     
+    # Update global configuration based on args
+    if args.trials_to_plot.lower() == 'all':
+        TRIALS_TO_PLOT = 'all'
+    elif args.trials_to_plot.lower() == 'none':
+        TRIALS_TO_PLOT = None
+    else:
+        try:
+            TRIALS_TO_PLOT = [int(x.strip()) for x in args.trials_to_plot.split(',')]
+            print(f"Plotting specific trials: {TRIALS_TO_PLOT}")
+        except ValueError:
+            print(f"Warning: Invalid format for --trials_to_plot '{args.trials_to_plot}'. Defaulting to 'all'.")
+            TRIALS_TO_PLOT = 'all'
+
     try:
         results = run_alignment_pipeline(
             data_dir=args.data_dir,

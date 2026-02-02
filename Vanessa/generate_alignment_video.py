@@ -86,6 +86,11 @@ def generate_video(data_dir, output_dir=None, output_filename="alignment_side_by
         
     output_path = os.path.join(output_dir, output_filename)
 
+    if os.path.exists(output_path):
+        print(f"\nAlignment verification video already exists at: {output_path}")
+        print("Skipping video generation step.")
+        return
+
     # 1. Validation
     if not os.path.exists(matrix_path):
         raise FileNotFoundError(f"Alignment matrix not found at {matrix_path}")

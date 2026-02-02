@@ -9,7 +9,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import animation
 from tqdm import tqdm
-from PyQt5.QtWidgets import QApplication
+# from PyQt5.QtWidgets import QApplication
+# from PyQt5.QtCore import Qt
 
 # ==========================================
 # Setup Paths
@@ -46,7 +47,7 @@ setup_paths()
 
 from pipeline_utils import create_hdf5, normalize_arr, get_trial_index, check_blue_is_first_via_intensity
 from pipeline_processing import hdf5_motion_correct, hemodynamic_correction, get_deltaF
-from GUIs.registration_gui import RegistrationGUI
+# from GUIs.registration_gui import RegistrationGUI
 from visualization_utils import save_video_of_stack, plot_global_trace, load_dat_analog
 
 # ==========================================
@@ -169,42 +170,27 @@ def step3_and_4_masking(hdf5_file_path, hdf5_creation_folder_path, dataset_type)
     print("\n--- Step 3 & 4: Masking ---")
     
     # Check for existing masks
+    # 1. Search in preprocessed_data folder
     mask_files = glob.glob(os.path.join(hdf5_creation_folder_path, "*_full_mask.npy"))
+    mask_files += glob.glob(os.path.join(hdf5_creation_folder_path, "brain_mask.npy"))
+    
+    # 2. Search in parent/experiment directory
+    exp_dir = os.path.dirname(hdf5_creation_folder_path)
+    mask_files += glob.glob(os.path.join(exp_dir, "*_full_mask.npy"))
+    mask_files += glob.glob(os.path.join(exp_dir, "brain_mask.npy"))
+    
+    # Remove duplicates and sort by newest
+    mask_files = sorted(list(set(mask_files)), key=os.path.getmtime, reverse=True)
+    
     if mask_files:
-        mask_files.sort(key=os.path.getmtime, reverse=True)
         path_to_full_mask = mask_files[0]
         print(f"Found existing mask: {path_to_full_mask}")
     else:
-        print("No mask found. Launching GUI...")
-        # Launch GUI
-        app = QApplication.instance()
-        if app is None:
-            app = QApplication(sys.argv)
-            
-        with h5py.File(hdf5_file_path, 'r') as f:
-            dataset_group = f.get(dataset_type)
-            dset = dataset_group['motion_corrected']
-            blue_img = (normalize_arr(dset[0,0,...]) * 255).astype('uint8')
-            violet_img = (normalize_arr(dset[0,1,...]) * 255).astype('uint8')
-            
-            original_cwd = os.getcwd()
-            os.chdir(hdf5_creation_folder_path)
-            try:
-                window = RegistrationGUI(blue_img, violet_img)
-                window.show()
-                print("GUI Open. Please draw and save mask as 'brain_mask.npy'. Close GUI when done.")
-                app.exec_()
-            finally:
-                os.chdir(original_cwd)
-        
-        # Check again
-        mask_files = glob.glob(os.path.join(hdf5_creation_folder_path, "*_full_mask.npy"))
-        if not mask_files:
-            raise FileNotFoundError("Mask file still not found after GUI step.")
-        
-        mask_files.sort(key=os.path.getmtime, reverse=True)
-        path_to_full_mask = mask_files[0]
-        print(f"Using new mask: {path_to_full_mask}")
+        print("No mask found. Stopping pipeline for manual masking.")
+        print(f"Checked: {hdf5_creation_folder_path} and {exp_dir}")
+        print(f"Please use the Launcher's 'Draw Mask' button to create: brain_mask.npy")
+        # Exit with a specific status or raise error to stop pipeline
+        raise RuntimeError("MASK_MISSING")
 
     return path_to_full_mask
 
@@ -446,6 +432,57 @@ def step7_visualization(hdf5_file_path, output_folder, dataset_type):
 # Main
 # ==========================================
 
+def get_or_create_hdf5(parent_path):
+    """
+    Finds existing HDF5 file or creates a new one if none exists.
+    Matches naming convention from Nicole/pipeline_utils.py
+    """
+    # Naming convention based on Nicole/pipeline_utils.py:
+    # parent_prev_base + '_' + parent_base + '_processedData' + '.h5py'
+    
+    parent_base = os.path.basename(parent_path)
+    # parent_path is .../preprocessed_data
+    # so parent_prev_base is the session folder name
+    # e.g. D:/.../Session1/preprocessed_data -> Session1
+    
+    # Actually, create_hdf5 takes 'hdf5_creation_folder_path' which is 'preprocessed_data'
+    # os.path.dirname(parent_path) gives the session folder path.
+    # os.path.basename(os.path.dirname(parent_path)) gives 'Session1'.
+    
+    session_dir_path = os.path.dirname(parent_path)
+    session_name = os.path.basename(session_dir_path)
+    
+    # Nicole's create_hdf5 uses:
+    # parent_base = os.path.basename(parent_path)  -> "preprocessed_data"
+    # parent_prev_base = os.path.basename(os.path.dirname(parent_path)) -> "SessionName"
+    # h5py_fileName = "SessionName_preprocessed_data_processedData"
+    
+    # Wait, let's verify exact logic from create_hdf5 read above:
+    # parent_base = os.path.basename(parent_path) (this is the folder passed in)
+    # parent_prev_base = os.path.basename(os.path.dirname(parent_path))
+    # h5py_fileName = parent_prev_base + '_' + parent_base + '_processedData'
+    
+    # If parent_path is ".../Session1/preprocessed_data":
+    # parent_base = "preprocessed_data"
+    # parent_prev_base = "Session1"
+    # Filename: "Session1_preprocessed_data_processedData.h5py"
+    
+    # Let's search for this pattern
+    search_pattern = os.path.join(parent_path, f"{session_name}_{parent_base}_processedData*.h5py")
+    existing_files = glob.glob(search_pattern)
+    
+    if existing_files:
+        # Sort by modification time to get the most recent one (or creation time if reliable)
+        # Using modification time seems safest to pick up where we left off
+        existing_files.sort(key=os.path.getmtime, reverse=True)
+        chosen_file = existing_files[0]
+        print(f"Found existing HDF5 file: {chosen_file}")
+        return chosen_file
+    else:
+        # Create new using the original function
+        print("No existing HDF5 file found. Creating new...")
+        return create_hdf5(parent_path)
+
 def run_pipeline(exp_path, dataset_type, overwrite_raw):
     # Parameters (could be args if needed)
     MC_NREFERENCE = 60
@@ -458,7 +495,8 @@ def run_pipeline(exp_path, dataset_type, overwrite_raw):
         if not os.path.exists(hdf5_creation_folder_path):
             os.makedirs(hdf5_creation_folder_path)
         
-        hdf5_file_path = create_hdf5(hdf5_creation_folder_path)
+        # Use get_or_create instead of always create
+        hdf5_file_path = get_or_create_hdf5(hdf5_creation_folder_path)
         print(f"HDF5 File: {hdf5_file_path}")
         
         step1_load_raw(hdf5_file_path, exp_path, dataset_type, overwrite_raw)

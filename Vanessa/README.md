@@ -4,10 +4,25 @@ This folder contains the complete workflow for processing Widefield Calcium Imag
 
 ## Pipeline Overview
 
-The workflow consists of three main stages, which can be run individually or together using the master script.
+The workflow consists of three main stages, which can be run individually or together using the master script or GUI.
 
-### 1. Master Script (Recommended)
-The easiest way to run the full analysis is using `process_and_align.py`. This script orchestrates all steps in the correct order.
+### 0. GUI Launcher (Recommended)
+The **Pipeline Launcher** allows you to select a parent directory, view all session folders, and process them in a batch.
+
+```bash
+python pipeline_launcher_gui.py
+```
+
+**Features:**
+*   **Batch Selection**: Check multiple folders to run them sequentially.
+*   **Draw Mask Button**: Open the masking GUI for a selected session.
+    *   Works on **Preprocessed Data** (HDF5) OR **Raw Data** (.dat).
+    *   If you draw the mask before running the pipeline, the pipeline will seamlessly use it without stopping.
+*   **Progress Tracking**: Granular progress bars for the current session.
+*   **Interactive Error Handling**: If a mask is missing during a run, the Launcher will pause and ask you to draw it, then retry the session automatically.
+
+### 1. Master Script (CLI)
+The easiest way to run the full analysis via command line is using `process_and_align.py`. This script orchestrates all steps in the correct order.
 
 ```bash
 python process_and_align.py --data_dir "D:\Path\To\Experiment\Date_Folder"
