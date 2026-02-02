@@ -448,12 +448,26 @@ def step7_visualization(hdf5_file_path, output_folder, dataset_type, video_cmap=
                 
                 # Try to load mask for background suppression
                 mask = None
-                mask_candidates = glob.glob(os.path.join(output_folder, "*_full_mask.npy")) + \
+                # Prioritize the mask for this dataset type
+                specific_mask = os.path.join(output_folder, f"{dataset_type}_full_mask.npy")
+                
+                mask_candidates = [specific_mask] + \
+                                  glob.glob(os.path.join(output_folder, "*_full_mask.npy")) + \
                                   glob.glob(os.path.join(output_folder, "brain_mask.npy"))
-                if mask_candidates:
-                    try:
-                        mask = np.load(mask_candidates[0]).astype(bool)
-                    except: pass
+                
+                for cand in mask_candidates:
+                    if os.path.exists(cand):
+                        try:
+                            loaded_mask = np.load(cand).astype(bool)
+                            # Verify shape
+                            if loaded_mask.shape == (H, W):
+                                mask = loaded_mask
+                                print(f"  Loaded masking from: {cand}")
+                                break
+                        except: pass
+                
+                if mask is None:
+                    print("  Warning: No valid mask found for background suppression.")
 
                 # Initialize Writer
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -503,6 +517,7 @@ def step7_visualization(hdf5_file_path, output_folder, dataset_type, video_cmap=
                         
                         if mask is not None:
                              frame_proc_color[~mask] = 0
+                             frame_raw[~mask] = 0
                              
                         # Combine
                         combined = np.hstack([frame_raw, frame_proc_color])
