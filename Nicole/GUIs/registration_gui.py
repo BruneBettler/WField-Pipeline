@@ -281,36 +281,14 @@ class RegistrationGUI(BaseMaskApp):
             return None
 
     def save_mask(self):
-        """Save the current drawing as a binary mask and separate hemisphere masks"""
+        """Save the current drawing as a binary mask"""
         # Check if there's any drawing (mask values that are 1, since we draw with 1s now)
         if np.all(self.mask == 0):
             print("No drawing to save. Please draw something first.")
             return
 
-        # Check if brain orientation is selected
-        if self.brain_orientation is None:
-            print("Please select brain orientation (Up or Down) before saving the mask.")
-            return
-
         save_path, _ = QFileDialog.getSaveFileName(self, "Save Mask", "", "NumPy Files (*.npy);;PNG Files (*.png)")
         if save_path:
-            # Create hemisphere masks
-            left_mask, right_mask = self.create_hemisphere_masks()
-            
-            # Determine naming based on brain orientation
-            if self.brain_orientation == "down":
-                # When nose is down, left side of image = right hemisphere, right side of image = left hemisphere
-                anatomical_left_mask = right_mask  # Right side of image is anatomical left
-                anatomical_right_mask = left_mask   # Left side of image is anatomical right
-                left_label = "left_hemisphere"
-                right_label = "right_hemisphere"
-            else:  # orientation == "up"
-                # When nose is up, left side of image = left hemisphere, right side of image = right hemisphere
-                anatomical_left_mask = left_mask   # Left side of image is anatomical left
-                anatomical_right_mask = right_mask  # Right side of image is anatomical right
-                left_label = "left_hemisphere"
-                right_label = "right_hemisphere"
-            
             # Remove extension for base filename
             base_path = save_path.rsplit('.', 1)[0] if '.' in save_path else save_path
             extension = save_path.rsplit('.', 1)[1] if '.' in save_path else 'npy'
@@ -319,38 +297,19 @@ class RegistrationGUI(BaseMaskApp):
                 # Save full mask
                 np.save(f"{base_path}_full_mask.npy", self.mask)
                 print(f"Full mask saved as NumPy array to {base_path}_full_mask.npy")
-                
-                # Save hemisphere masks with anatomically correct naming
-                np.save(f"{base_path}_{left_label}.npy", anatomical_left_mask)
-                np.save(f"{base_path}_{right_label}.npy", anatomical_right_mask)
-                print(f"Left hemisphere mask saved to {base_path}_{left_label}.npy")
-                print(f"Right hemisphere mask saved to {base_path}_{right_label}.npy")
-                print(f"Brain orientation: {self.brain_orientation} (nose pointing {self.brain_orientation})")
                 print(f"Mask format: 1 = drawn region, 0 = background")
                 
             elif extension == 'png':
                 # Convert to binary format for PNG (255 for drawn, 0 for background)
                 binary_mask = self.mask.astype(np.uint8) * 255
-                binary_left = anatomical_left_mask.astype(np.uint8) * 255
-                binary_right = anatomical_right_mask.astype(np.uint8) * 255
                 
                 cv2.imwrite(f"{base_path}_full_mask.png", binary_mask)
-                cv2.imwrite(f"{base_path}_{left_label}.png", binary_left)
-                cv2.imwrite(f"{base_path}_{right_label}.png", binary_right)
                 print(f"Full mask saved as binary PNG to {base_path}_full_mask.png")
-                print(f"Left hemisphere mask saved to {base_path}_{left_label}.png")
-                print(f"Right hemisphere mask saved to {base_path}_{right_label}.png")
-                print(f"Brain orientation: {self.brain_orientation} (nose pointing {self.brain_orientation})")
                 print(f"PNG format: 255 = drawn region, 0 = background")
             else:
                 # Default to .npy if no extension specified
                 np.save(f"{base_path}_full_mask.npy", self.mask)
-                np.save(f"{base_path}_{left_label}.npy", anatomical_left_mask)
-                np.save(f"{base_path}_{right_label}.npy", anatomical_right_mask)
                 print(f"Full mask saved as NumPy array to {base_path}_full_mask.npy")
-                print(f"Left hemisphere mask saved to {base_path}_{left_label}.npy")
-                print(f"Right hemisphere mask saved to {base_path}_{right_label}.npy")
-                print(f"Brain orientation: {self.brain_orientation} (nose pointing {self.brain_orientation})")
                 print(f"Mask format: 1 = drawn region, 0 = background")
 
     def mousePressEvent(self, event):

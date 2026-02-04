@@ -299,7 +299,7 @@ def step6_deltaF(hdf5_file_path, dataset_type):
         
         sum_F0 = np.zeros(dF_dset.shape[1:], dtype=np.float64)
         valid_frame_count = 0
-        chunk_size = 500
+        chunk_size = 500 # Adjust based on memory
         
         for i in tqdm(range(0, n_frames, chunk_size), desc="Baseline F0"):
             chunk_end = min(i + chunk_size, n_frames)
@@ -603,7 +603,7 @@ def get_or_create_hdf5(parent_path):
         print("No existing HDF5 file found. Creating new...")
         return create_hdf5(parent_path)
 
-def run_pipeline(exp_path, dataset_type, overwrite_raw, video_cmap='jet', max_frames=2000):
+def run_pipeline(exp_path, dataset_type, overwrite_raw, video_cmap='jet', max_frames=2000, skip_dff=False):
     # Parameters (could be args if needed)
     MC_NREFERENCE = 60
     MC_CHUNKSIZE = 512
@@ -623,7 +623,12 @@ def run_pipeline(exp_path, dataset_type, overwrite_raw, video_cmap='jet', max_fr
         step2_motion_correction(hdf5_file_path, dataset_type, MC_NREFERENCE, MC_CHUNKSIZE)
         path_to_mask = step3_and_4_masking(hdf5_file_path, hdf5_creation_folder_path, dataset_type)
         step5_hemo_correction(hdf5_file_path, path_to_mask, dataset_type, HM_HIGHPASS)
-        step6_deltaF(hdf5_file_path, dataset_type)
+        
+        if not skip_dff:
+            step6_deltaF(hdf5_file_path, dataset_type)
+        else:
+            print("\nSkipping Step 6: Delta F / F (User Requested)")
+            
         step7_visualization(hdf5_file_path, hdf5_creation_folder_path, dataset_type, video_cmap, max_frames)
         
         print("\nPreprocessing pipeline completed successfully!")
@@ -639,6 +644,7 @@ if __name__ == "__main__":
     parser.add_argument('--data_dir', type=str, required=True, help="Path to experiment data (folder containing .dat files)")
     parser.add_argument('--dataset_type', type=str, default='led', help="Dataset type (led/widefield)")
     parser.add_argument('--overwrite', action='store_true', help="Overwrite raw frames if they exist")
+    parser.add_argument('--skip_dff', action='store_true', help="Skip dF/F calculation") # NEW
     parser.add_argument('--video_cmap', type=str, default='jet', help="Colormap for preview video (default: jet)")
     parser.add_argument('--max_frames', type=int, default=2000, help="Max frames for preview video (default: 2000)")
     
@@ -648,4 +654,4 @@ if __name__ == "__main__":
         print(f"Error: Data directory not found: {args.data_dir}")
         sys.exit(1)
         
-    run_pipeline(args.data_dir, args.dataset_type, args.overwrite, args.video_cmap, args.max_frames)
+    run_pipeline(args.data_dir, args.dataset_type, args.overwrite, args.video_cmap, args.max_frames, skip_dff=args.skip_dff)

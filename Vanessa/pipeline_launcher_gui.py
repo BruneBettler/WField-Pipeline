@@ -199,10 +199,12 @@ class PipelineLauncher(QMainWindow):
         # 3. Pipeline Options
         opt_layout = QHBoxLayout()
         self.cb_skip_pre = QCheckBox("Skip Preprocessing")
+        self.cb_skip_dff = QCheckBox("Skip dF/F") 
         self.cb_skip_align = QCheckBox("Skip Alignment")
         self.cb_skip_video = QCheckBox("Skip Video Generation")
         opt_layout.addWidget(QLabel("Options:"))
         opt_layout.addWidget(self.cb_skip_pre)
+        opt_layout.addWidget(self.cb_skip_dff) 
         opt_layout.addWidget(self.cb_skip_align)
         opt_layout.addWidget(self.cb_skip_video)
         opt_layout.addStretch()
@@ -211,19 +213,19 @@ class PipelineLauncher(QMainWindow):
         # 3b. Parameters
         param_layout = QHBoxLayout()
         param_layout.addWidget(QLabel("Trials to Plot (Alignment):"))
-        self.txt_trials = QLineEdit("all")
+        self.txt_trials = QLineEdit('1')
         self.txt_trials.setPlaceholderText("e.g. 'all', '1,3,5', '0'")
         self.txt_trials.setToolTip("Comma-separated list of trial indices to plot, or 'all'")
         param_layout.addWidget(self.txt_trials)
         
         param_layout.addWidget(QLabel("Video Colormap:"))
         self.combo_cmap = QComboBox()
-        self.combo_cmap.addItems(['jet', 'viridis', 'plasma', 'inferno', 'magma', 'hot', 'bone', 'ocean', 'cool', 'gray'])
+        self.combo_cmap.addItems(['viridis', 'plasma', 'inferno', 'magma', 'hot', 'bone', 'ocean', 'cool', 'gray'])
         self.combo_cmap.setToolTip("Colormap for verification video")
         param_layout.addWidget(self.combo_cmap)
 
         param_layout.addWidget(QLabel("Preview Length:"))
-        self.txt_max_frames = QLineEdit("2000")
+        self.txt_max_frames = QLineEdit("200")
         self.txt_max_frames.setFixedWidth(60)
         self.txt_max_frames.setToolTip("Number of frames to generate for preview videos")
         self.txt_max_frames.setValidator(QIntValidator(1, 100000))
@@ -422,7 +424,16 @@ class PipelineLauncher(QMainWindow):
                 os.chdir(preprocessed_dir)
             else:
                 os.chdir(session_path) # Fallback
-                
+            
+            # Close existing window if it exists to prevent crashes/leaks
+            if hasattr(self, 'mask_window') and self.mask_window is not None:
+                try:
+                    self.mask_window.close()
+                    self.mask_window.deleteLater()
+                except RuntimeError:
+                    pass
+                self.mask_window = None
+
             self.mask_window = RegistrationGUI(blue_img, violet_img)
             self.mask_window.show()
             return True
@@ -447,6 +458,7 @@ class PipelineLauncher(QMainWindow):
         # Gather flags
         flags = []
         if self.cb_skip_pre.isChecked(): flags.append('--skip_preprocessing')
+        if self.cb_skip_dff.isChecked(): flags.append('--skip_dff')  # NEW
         if self.cb_skip_align.isChecked(): flags.append('--skip_alignment')
         if self.cb_skip_video.isChecked(): flags.append('--skip_video')
         
@@ -470,6 +482,7 @@ class PipelineLauncher(QMainWindow):
         self.btn_stop.setEnabled(True)
         self.session_list.setEnabled(False)
         self.cb_skip_pre.setEnabled(False)
+        self.cb_skip_dff.setEnabled(False) # NEW
         self.cb_skip_align.setEnabled(False)
         self.cb_skip_video.setEnabled(False)
         self.txt_trials.setEnabled(False)
@@ -532,6 +545,7 @@ class PipelineLauncher(QMainWindow):
         self.btn_run.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.session_list.setEnabled(True)
+        self.cb_skip_dff.setEnabled(True) # NEW
         self.cb_skip_pre.setEnabled(True)
         self.cb_skip_align.setEnabled(True)
         self.cb_skip_video.setEnabled(True)

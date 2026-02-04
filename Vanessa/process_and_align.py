@@ -41,6 +41,7 @@ def main():
     parser = argparse.ArgumentParser(description="Full Processing & Alignment Pipeline")
     parser.add_argument('--data_dir', type=str, required=True, help="Path to raw data directory")
     parser.add_argument('--skip_preprocessing', action='store_true', help="Skip step 1 (Preprocessing)")
+    parser.add_argument('--skip_dff', action='store_true', help="Skip dF/F calculation in preprocessing")  # NEW
     parser.add_argument('--skip_alignment', action='store_true', help="Skip step 2 (Alignment)")
     parser.add_argument('--skip_video', action='store_true', help="Skip step 3 (Video Generation)")
     parser.add_argument('--trials_to_plot', type=str, default='all', help="Trials to plot in alignment step (e.g. 'all', '0,1,2')")
@@ -61,6 +62,8 @@ def main():
         # Args for preprocessing_pipeline.py
         # defined in: parser.add_argument('--data_dir'...)
         prep_args = ["--data_dir", data_dir, "--video_cmap", args.video_cmap, "--max_frames", str(args.max_frames)]
+        if args.skip_dff:
+             prep_args.append("--skip_dff")
         run_step("preprocessing_pipeline.py", prep_args, "Preprocessing (Masking, Hemo, DeltaF)")
     
     # --- Step 2: Alignment ---
