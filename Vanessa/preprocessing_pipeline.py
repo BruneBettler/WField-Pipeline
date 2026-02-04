@@ -274,7 +274,7 @@ def step5_hemo_correction(hdf5_file_path, path_to_full_mask, dataset_type, hm_hi
 
         print(f"Done hemodynamic correction. Processed {len(ranges)} valid intervals.")
 
-def step6_deltaF(hdf5_file_path, dataset_type):
+def step6_deltaF(hdf5_file_path, dataset_type, baseline_frames=None):
     print("\n--- Step 6: Delta F / F ---")
     
     with h5py.File(hdf5_file_path, 'a') as f:
@@ -289,40 +289,104 @@ def step6_deltaF(hdf5_file_path, dataset_type):
             print("Error: hemo_corrected dataset required for deltaF step.")
             return
             
-        dF_dset = hdf5_group['hemo_corrected']
-        # Use hemo_corrected for F0 calculation as well
-        # F0_source_dset = hdf5_group['motion_corrected'] 
+        dF_dset = hdf5_group['hemo_corrected'] # This is the NUMERATOR (Delta F)
+        
+        if 'motion_corrected' not in hdf5_group:
+             print("Error: motion_corrected_frames required for F0 calculation.")
+             return
+             
+        F0_source_dset = hdf5_group['motion_corrected'] 
         n_frames = dF_dset.shape[0]
         
-        # 1. Calculate Baseline F0
-        print("Calculating baseline F0 (using valid frames from hemo_corrected)...")
+        # 1. Calculate Baseline F0 from RAW DATA
+        print("Calculating baseline F0 (using mean of motion_corrected Blue channel)...")
         
-        sum_F0 = np.zeros(dF_dset.shape[1:], dtype=np.float64)
-        valid_frame_count = 0
-        chunk_size = 500 # Adjust based on memory
+        # Initialize F0 components
+        sum_F0 = np.zeros((dF_dset.shape[1], dF_dset.shape[2]), dtype=np.float64)
+        valid_count_F0 = 0
         
-        for i in tqdm(range(0, n_frames, chunk_size), desc="Baseline F0"):
-            chunk_end = min(i + chunk_size, n_frames)
-            
-            dF_chunk = dF_dset[i:chunk_end]
-            middle_pixel = dF_chunk[:, dF_chunk.shape[1]//2, dF_chunk.shape[2]//2]
-            valid_mask = ~np.isnan(middle_pixel)
-            
-            if np.any(valid_mask):
-                # Use the hemo_corrected chunk itself
-                valid_chunk = dF_chunk[valid_mask]
-                sum_F0 += np.sum(valid_chunk, axis=0)
-                valid_frame_count += np.sum(valid_mask)
-            
-        if valid_frame_count == 0:
+        # Determine which frames to use for baseline
+        # baseline_frames can be:
+        # - None: Use all frames
+        # - tuple: (start, end) range
+        # - list/array: Specific indices [0, 1, 2, 10, 11, ...]
+        
+        chunk_size = 500
+        
+        # Logic to iterate over baseline frames
+        if baseline_frames is None:
+             # Use all frames
+             print("  > Using whole session for baseline.")
+             idx_iterator = range(0, n_frames, chunk_size)
+             
+             for i in tqdm(idx_iterator, desc="Baseline F0"):
+                 chunk_end = min(i + chunk_size, n_frames)
+                 raw_chunk = F0_source_dset[i:chunk_end, 0, :, :]
+                 sum_F0 += np.sum(raw_chunk, axis=0)
+                 valid_count_F0 += (chunk_end - i)
+
+        elif isinstance(baseline_frames, tuple) and len(baseline_frames) == 2:
+             # Range (start, end)
+             start_f, end_f = baseline_frames
+             start_f = max(0, start_f)
+             end_f = min(n_frames, end_f)
+             print(f"  > Using baseline range: {start_f} to {end_f}")
+             
+             if end_f > start_f:
+                 for i in tqdm(range(start_f, end_f, chunk_size), desc="Baseline F0 (Range)"):
+                     chunk_end = min(i + chunk_size, end_f)
+                     raw_chunk = F0_source_dset[i:chunk_end, 0, :, :]
+                     sum_F0 += np.sum(raw_chunk, axis=0)
+                     valid_count_F0 += (chunk_end - i)
+
+        elif isinstance(baseline_frames, (list, np.ndarray)):
+             # List of specific indices
+             indices = np.array(baseline_frames)
+             indices = indices[indices < n_frames] # Bound check
+             print(f"  > Using specific {len(indices)} frames for baseline.")
+             
+             # Process in chunks of indices to avoid random access overhead if possible, 
+             # but random access in HDF5 is slow. 
+             # Better to sort indices and group them?
+             indices = np.sort(indices)
+             
+             # Simple approach: Block reading might be inefficient if indices are scattered
+             # But HDF5 supports some fancy indexing if dset is small, but likely not for full frames.
+             # Let's iterate through the indices in chunks
+             
+             for i in tqdm(range(0, len(indices), chunk_size), desc="Baseline F0 (Indices)"):
+                 batch_indices = indices[i : i + chunk_size]
+                 # We have to read these frames. 
+                 # Optimization: slicing is faster than fancy indexing for HDF5 generally
+                 # If indices are contiguous, use slice. If not, we might be slow.
+                 # Let's read one by one or see if we can optimize? 
+                 # Actually, let's just use fancy indexing if dataset fits in memory? No.
+                 # We will just load them. `dset[batch_indices]` works in h5py if indices are sorted list
+                 
+                 # IMPORTANT: h5py fancy indexing `dset[list]` ONLY works if `list` is growing order and unique
+                 # We sorted them above.
+                 if len(batch_indices) > 0:
+                     # For Raw Frames (Time, Channel, H, W) -> we want Blue (Channel 0)
+                     # dset[indices] returns (N, 2, H, W). We take [:, 0, :, :]
+                     
+                     # Note: h5py read might be slow for scattered indices.
+                     raw_batch = F0_source_dset[batch_indices] # shape (N, 2, H, W)
+                     raw_batch_blue = raw_batch[:, 0, :, :]
+                     
+                     sum_F0 += np.sum(raw_batch_blue, axis=0)
+                     valid_count_F0 += len(batch_indices)
+
+        if valid_count_F0 == 0:
             print("Warning: No valid frames found for F0!")
             mean_F0 = np.ones(dF_dset.shape[1:], dtype=np.float64)
         else:
-            mean_F0 = sum_F0 / valid_frame_count
+            mean_F0 = sum_F0 / valid_count_F0
         
+        # Avoid division by zero in dark areas
         mean_F0[mean_F0 == 0] = 1.0 
         
         # 2. Calculate dF/F
+        # Output = hemo_corrected (dF) / mean_F0 (F)
         deltaF_dataset = hdf5_group.create_dataset(
             'deltaF', 
             shape=dF_dset.shape, 
@@ -533,7 +597,26 @@ def step7_visualization(hdf5_file_path, output_folder, dataset_type, video_cmap=
                         if np.any(frame_nan_mask):
                             frame_proc_color[frame_nan_mask] = 0
                             frame_raw[frame_nan_mask] = 0
-                             
+                        
+                        # NEW: Force background black for 0 indices (which Jet maps to Blue)
+                        # If we have a mask, ~mask handles it.
+                        # If we rely on NaNs, frame_nan_mask handles it.
+                        # BUT if we have 0s that are NOT NaNs and NOT Masked (but arguably background padding),
+                        # they will show as blue.
+                        # Check "pure black" in grayscale equivalent
+                        if mask is None and not np.any(frame_nan_mask):
+                            # Heuristic: If corners are strictly 0 in raw, mask them in color?
+                            # Maybe unsafe.
+                            pass
+                            
+                        # Double check background color is strictly 0,0,0
+                        # Sometimes broadcasting or types mess up. 
+                        # This ensures the black is black.
+                        if mask is not None:
+                            frame_proc_color[~mask] = [0, 0, 0]
+                        if np.any(frame_nan_mask):
+                             frame_proc_color[frame_nan_mask] = [0, 0, 0]
+
                         # Combine
                         combined = np.hstack([frame_raw, frame_proc_color])
                         
@@ -603,7 +686,7 @@ def get_or_create_hdf5(parent_path):
         print("No existing HDF5 file found. Creating new...")
         return create_hdf5(parent_path)
 
-def run_pipeline(exp_path, dataset_type, overwrite_raw, video_cmap='jet', max_frames=2000, skip_dff=False):
+def run_pipeline(exp_path, dataset_type, overwrite_raw, video_cmap='jet', max_frames=2000, skip_dff=False, baseline_frames=None):
     # Parameters (could be args if needed)
     MC_NREFERENCE = 60
     MC_CHUNKSIZE = 512
@@ -625,7 +708,7 @@ def run_pipeline(exp_path, dataset_type, overwrite_raw, video_cmap='jet', max_fr
         step5_hemo_correction(hdf5_file_path, path_to_mask, dataset_type, HM_HIGHPASS)
         
         if not skip_dff:
-            step6_deltaF(hdf5_file_path, dataset_type)
+            step6_deltaF(hdf5_file_path, dataset_type, baseline_window=baseline_frames)
         else:
             print("\nSkipping Step 6: Delta F / F (User Requested)")
             
@@ -644,14 +727,20 @@ if __name__ == "__main__":
     parser.add_argument('--data_dir', type=str, required=True, help="Path to experiment data (folder containing .dat files)")
     parser.add_argument('--dataset_type', type=str, default='led', help="Dataset type (led/widefield)")
     parser.add_argument('--overwrite', action='store_true', help="Overwrite raw frames if they exist")
-    parser.add_argument('--skip_dff', action='store_true', help="Skip dF/F calculation") # NEW
+    parser.add_argument('--skip_dff', action='store_true', help="Skip dF/F calculation") 
     parser.add_argument('--video_cmap', type=str, default='jet', help="Colormap for preview video (default: jet)")
     parser.add_argument('--max_frames', type=int, default=2000, help="Max frames for preview video (default: 2000)")
+    parser.add_argument('--baseline_start', type=int, default=None, help="Start frame for baseline F0 (optional)")
+    parser.add_argument('--baseline_end', type=int, default=None, help="End frame for baseline F0 (optional)")
     
     args = parser.parse_args()
+    
+    baseline_window = None
+    if args.baseline_start is not None and args.baseline_end is not None:
+         baseline_window = (args.baseline_start, args.baseline_end)
     
     if not os.path.exists(args.data_dir):
         print(f"Error: Data directory not found: {args.data_dir}")
         sys.exit(1)
         
-    run_pipeline(args.data_dir, args.dataset_type, args.overwrite, args.video_cmap, args.max_frames, skip_dff=args.skip_dff)
+    run_pipeline(args.data_dir, args.dataset_type, args.overwrite, args.video_cmap, args.max_frames, skip_dff=args.skip_dff, baseline_frames=baseline_window)

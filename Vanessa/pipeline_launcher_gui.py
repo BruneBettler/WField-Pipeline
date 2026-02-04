@@ -284,34 +284,50 @@ class PipelineLauncher(QMainWindow):
         if not self.selected_dir:
             return
             
-        # List subdirectories
+        # Recursive search: Selected -> Mouse -> Date (Session) -> Files
         try:
+            # Level 1: Mouse Directories
             items = os.listdir(self.selected_dir)
-            potential_dirs = []
+            mouse_dirs = []
             for item in items:
                 path = os.path.join(self.selected_dir, item)
                 if os.path.isdir(path):
-                    potential_dirs.append(path)
+                    mouse_dirs.append(path)
             
-            # Smart filter: check for Frames_*.dat in immediate directory
             count_found = 0
-            for d in potential_dirs:
-                # Check if it looks like data
-                has_dat = len(glob.glob(os.path.join(d, "Frames_*.dat"))) > 0
-                display_text = os.path.basename(d)
-                if has_dat:
-                     display_text += " [DATA DETECTED]"
-                
-                item = QListWidgetItem(display_text)
-                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-                if has_dat:
-                     item.setCheckState(Qt.Checked)
-                     count_found += 1
-                else:
-                     item.setCheckState(Qt.Unchecked)
-                item.setData(Qt.UserRole, d)
-                self.session_list.addItem(item)
-                
+            
+            # Level 2: Date/Session Directories
+            for m_dir in mouse_dirs:
+                mouse_name = os.path.basename(m_dir)
+                try:
+                    session_items = os.listdir(m_dir)
+                    for s_item in session_items:
+                        s_path = os.path.join(m_dir, s_item)
+                        if os.path.isdir(s_path):
+                            # Check for data here
+                            has_dat = len(glob.glob(os.path.join(s_path, "Frames_*.dat"))) > 0
+                            
+                            # Display as "MouseName / SessionName"
+                            display_text = f"{mouse_name} / {s_item}"
+                            
+                            # Add to list if it has data or is a directory (optional filtering)
+                            if has_dat:
+                                display_text += " [DATA DETECTED]"
+                            
+                            item = QListWidgetItem(display_text)
+                            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                            
+                            if has_dat:
+                                item.setCheckState(Qt.Checked)
+                                count_found += 1
+                            else:
+                                item.setCheckState(Qt.Unchecked)
+                                
+                            item.setData(Qt.UserRole, s_path)
+                            self.session_list.addItem(item)
+                except Exception as e:
+                    print(f"Skipping {m_dir} due to error: {e}")
+            
             # Fallback: if no subdirs have data, check if the selected dir IS the data dir
             if count_found == 0:
                  if len(glob.glob(os.path.join(self.selected_dir, "Frames_*.dat"))) > 0:
