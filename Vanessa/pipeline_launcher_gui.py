@@ -284,7 +284,7 @@ class PipelineLauncher(QMainWindow):
         if not self.selected_dir:
             return
             
-        # Recursive search: Selected -> Mouse -> Date (Session) -> Files
+        # Two-level directory scan: Selected -> Mouse -> Date (Session) -> Files
         try:
             # Level 1: Mouse Directories
             items = os.listdir(self.selected_dir)

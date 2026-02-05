@@ -301,7 +301,7 @@ def step6_deltaF(hdf5_file_path, dataset_type, baseline_frames=None):
         # 1. Calculate Baseline F0 from RAW DATA
         print("Calculating baseline F0 (using mean of motion_corrected Blue channel)...")
         
-        # Initialize F0 components
+        # Initialize baseline (blue channel) accumulator
         sum_F0 = np.zeros((dF_dset.shape[1], dF_dset.shape[2]), dtype=np.float64)
         valid_count_F0 = 0
         
@@ -363,7 +363,7 @@ def step6_deltaF(hdf5_file_path, dataset_type, baseline_frames=None):
                  # Actually, let's just use fancy indexing if dataset fits in memory? No.
                  # We will just load them. `dset[batch_indices]` works in h5py if indices are sorted list
                  
-                 # IMPORTANT: h5py fancy indexing `dset[list]` ONLY works if `list` is growing order and unique
+                 # IMPORTANT: h5py fancy indexing `dset[list]` ONLY works if `list` is in sorted ascending order and unique
                  # We sorted them above.
                  if len(batch_indices) > 0:
                      # For Raw Frames (Time, Channel, H, W) -> we want Blue (Channel 0)
@@ -612,10 +612,7 @@ def step7_visualization(hdf5_file_path, output_folder, dataset_type, video_cmap=
                         # Double check background color is strictly 0,0,0
                         # Sometimes broadcasting or types mess up. 
                         # This ensures the black is black.
-                        if mask is not None:
-                            frame_proc_color[~mask] = [0, 0, 0]
-                        if np.any(frame_nan_mask):
-                             frame_proc_color[frame_nan_mask] = [0, 0, 0]
+
 
                         # Combine
                         combined = np.hstack([frame_raw, frame_proc_color])
@@ -708,7 +705,7 @@ def run_pipeline(exp_path, dataset_type, overwrite_raw, video_cmap='jet', max_fr
         step5_hemo_correction(hdf5_file_path, path_to_mask, dataset_type, HM_HIGHPASS)
         
         if not skip_dff:
-            step6_deltaF(hdf5_file_path, dataset_type, baseline_window=baseline_frames)
+            step6_deltaF(hdf5_file_path, dataset_type, baseline_frames=baseline_frames)
         else:
             print("\nSkipping Step 6: Delta F / F (User Requested)")
             
