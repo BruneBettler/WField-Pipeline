@@ -80,44 +80,38 @@ def check_first_frame_is_blue(analog_path):
 
 def check_blue_is_first_via_intensity(dat_file_path, H, W, dtype=np.uint16, channels=2):
     """
-    Determines if the first frame in the dat file is Blue or Violet based on mean intensity.
-    Violtet (Hemo) frames typically have higher baseline intensity than Blue (Functional) frames.
+    Determines if the first frame in the dat file is Blue or Violet based on mean intensity across the whole file.
+    Violet (Hemo) frames typically have higher baseline intensity than Blue (Functional) frames.
     
     Returns:
         True if first frame is Blue (lower intensity)
         False if first frame is Violet (higher intensity)
     """
     try:
-        # Calculate bytes to read for first 2 frames (Time 0, Ch0 and Ch1)
-        # File structure assumption: [Frame0_Ch0] [Frame0_Ch1] [Frame1_Ch0] ...
-        pixels_per_frame = H * W
-        bytes_per_pixel = np.dtype(dtype).itemsize
-        # Read first 2 frames
-        bytes_to_read = 2 * pixels_per_frame * bytes_per_pixel
+        file_size = os.path.getsize(dat_file_path)
+        frame_size_bytes = H * W * channels * np.dtype(dtype).itemsize
         
-        with open(dat_file_path, 'rb') as f:
-            data_bytes = f.read(bytes_to_read)
-            
-        if len(data_bytes) < bytes_to_read:
-            print(f"Warning: File {os.path.basename(dat_file_path)} too small for intensity check.")
-            return True # Default
-            
-        data = np.frombuffer(data_bytes, dtype=dtype)
+        num_frames = file_size // frame_size_bytes
         
-        frame0 = data[:pixels_per_frame]
-        frame1 = data[pixels_per_frame:]
+        if num_frames == 0:
+            print(f"Warning: File {os.path.basename(dat_file_path)} has no full frames.")
+            return True
         
-        m0 = np.mean(frame0)
-        m1 = np.mean(frame1)
+        # Use memmap to read data efficiently
+        # Shape: (frames, channels, H, W)
+        data = np.memmap(dat_file_path, dtype=dtype, mode='r', shape=(num_frames, channels, H, W))
+        
+        # Compute mean of Channel 0 and Channel 1 across all frames
+        mean_ch0 = np.mean(data[:, 0, :, :])
+        mean_ch1 = np.mean(data[:, 1, :, :])
+        
+        # Close memmap reference
+        del data
         
         # Violet is usually brighter. 
-        # If m0 < m1, m0 is Blue. 
-        # If m0 > m1, m0 is Violet.
-        is_blue_first = m0 < m1
-        
-        if abs(m0 - m1) < 100:
-            print(f"Warning: Low contrast between channels in {os.path.basename(dat_file_path)} (Diff={m1-m0:.1f}). Defaulting to Blue First.")
-            return True
+        # If mean_ch0 < mean_ch1, Ch0 is Blue (Functional). 
+        # If mean_ch0 > mean_ch1, Ch0 is Violet (Hemodynamic).
+        is_blue_first = mean_ch0 < mean_ch1
             
         return is_blue_first
         
